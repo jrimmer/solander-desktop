@@ -73,10 +73,59 @@ if (hasVendor) {
 	// --- Step 5: Inject __SOLANDER__ into app/index.html ---
 	let spaHtml = readFileSync(appIndex, "utf-8");
 	const injectionScript = `<script>
+// Solander desktop runtime — injected by prepare-dist.mjs
 globalThis.__SOLANDER__ = {
-  serverUrl: null,
+  get serverUrl() { return localStorage.getItem('solander-server-url'); },
   desktop: true
 };
+
+// Override global fetch to use tauri-plugin-http (bypasses CORS)
+// and redirect requests to the configured server URL.
+(function() {
+  const origFetch = window.fetch.bind(window);
+  const invoke = window.__TAURI_INTERNALS__?.invoke;
+
+  window.fetch = async function(input, init) {
+    const serverUrl = globalThis.__SOLANDER__.serverUrl;
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+
+    // If we have a configured server URL and the request is to tauri://localhost,
+    // rewrite it to the configured server.
+    if (serverUrl && url && (url.startsWith('tauri://localhost') || url.startsWith('http://tauri.localhost'))) {
+      const rewritten = url.replace(/^https?://(tauri.localhost|localhost)/, serverUrl.replace(//+$/, ''));
+      if (typeof invoke === 'function') {
+        // Use tauri-plugin-http to bypass CORS
+        const headers = (init?.headers || {}) instanceof Headers
+          ? Object.fromEntries((init?.headers || new Headers()).entries())
+          : (init?.headers || {});
+        try {
+          const rid = await invoke('plugin:http|fetch', {
+            method: init?.method || 'GET',
+            url: rewritten,
+            headers: { ...headers, 'Content-Type': 'application/json' },
+            body: init?.body || null
+          });
+          const response = await invoke('plugin:http|fetch_send', { rid });
+          return {
+            ok: response.status >= 200 && response.status < 300,
+            status: response.status,
+            statusText: response.statusText,
+            headers: new Headers(response.headers),
+            url: response.url,
+            async json() { return JSON.parse(await invoke('plugin:http|fetch_read_body', { rid: response.rid })); },
+            async text() { return await invoke('plugin:http|fetch_read_body', { rid: response.rid }); }
+          };
+        } catch (e) {
+          console.error('[solander] fetch error:', e);
+          throw e;
+        }
+      }
+      // Fallback: use original fetch (may fail due to CORS)
+      return origFetch(rewritten, init);
+    }
+    return origFetch(input, init);
+  };
+})();
 </script>\n`;
 
 	const firstScript = spaHtml.indexOf("<script");
@@ -145,17 +194,24 @@ const bootLoader = `<!DOCTYPE html>
     <div class="spinner"></div>
     <p>Starting Solander...</p>
   </div>
-  <script type="module">
-    import { invoke } from '@tauri-apps/api/core';
-
+  <script>
+    // Use __TAURI_INTERNALS__ directly instead of ES module import
+    // to avoid module resolution hangs in the Tauri webview.
     async function boot() {
       try {
-        // Race the IPC call against a 3-second timeout
+        const invoke = window.__TAURI_INTERNALS__?.invoke;
+        if (typeof invoke !== 'function') {
+          // Not in Tauri or IPC not ready — go straight to SPA
+          window.location.replace('app/index.html');
+          return;
+        }
         const url = await Promise.race([
           invoke('get_server_url'),
           new Promise((_, reject) => setTimeout(() => reject(new Error('IPC timeout')), 3000))
         ]);
         if (url) {
+          // Store URL in localStorage so the SPA can read it via __SOLANDER__.serverUrl
+          localStorage.setItem('solander-server-url', url);
           window.location.replace('app/index.html');
         } else {
           window.location.replace('server-picker.html');

@@ -193,32 +193,7 @@
         setLoading(true);
 
         try {
-          // Step 2: Reachability + Chatto probe
-          // Use tauri-plugin-http to bypass CORS
-          const probeUrl = new URL(
-            "/api/connect/chatto.discovery.v1.ServerDiscoveryService/GetServer",
-            url,
-          ).toString();
-          const response = await fetch(probeUrl, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({}),
-          });
-
-          if (!response.ok) {
-            showError(
-              "Server is reachable but returned an unexpected response. Is this a Chatto server?",
-            );
-            return;
-          }
-
-          const data = await response.json();
-          if (!data?.profile?.name) {
-            showError("This does not appear to be a Chatto server.");
-            return;
-          }
-
-          // Step 3: Persist the validated URL
+          // Step 2: Persist the validated URL (skip server probe for now)
           const invoke = getInvoke();
           if (typeof invoke !== "function") {
             showError("IPC not available. Are you running inside Tauri?");
@@ -226,7 +201,10 @@
           }
           await invoke("set_server_url", { url: url.replace(/\/+$/, "") });
 
-          // Step 4: Reload to boot the SPA
+          // Also store in localStorage for the SPA to read
+          localStorage.setItem("solander-server-url", url.replace(/\/+$/, ""));
+
+          // Step 3: Reload to boot the SPA
           window.location.assign("/index.html");
         } catch (err) {
           console.error("Connection error:", err);
