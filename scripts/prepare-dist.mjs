@@ -92,7 +92,8 @@ globalThis.__SOLANDER__ = {
     // If we have a configured server URL and the request is to tauri://localhost,
     // rewrite it to the configured server.
     if (serverUrl && url && (url.startsWith('tauri://localhost') || url.startsWith('http://tauri.localhost'))) {
-      const rewritten = url.replace(/^https?://(tauri.localhost|localhost)/, serverUrl.replace(//+$/, ''));
+      const cleanUrl = serverUrl.endsWith('/') ? serverUrl.slice(0, -1) : serverUrl;
+      const rewritten = url.replace('tauri://localhost', cleanUrl);
       if (typeof invoke === 'function') {
         // Use tauri-plugin-http to bypass CORS
         const headers = (init?.headers || {}) instanceof Headers
