@@ -14,87 +14,96 @@
  */
 
 import {
-  copyFileSync,
-  cpSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
-import { resolve, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+	copyFileSync,
+	cpSync,
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	readdirSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const ROOT = resolve(__dirname, '..');
-const VENDOR = resolve(ROOT, 'vendor', 'frontend');
-const DIST = resolve(ROOT, 'dist');
-const SHELL = resolve(ROOT, 'src', 'shell');
+const ROOT = resolve(__dirname, "..");
+const VENDOR = resolve(ROOT, "vendor", "frontend");
+const DIST = resolve(ROOT, "dist");
+const SHELL = resolve(ROOT, "src", "shell");
 
 // --- Step 1: Check if vendor build exists ---
 const hasVendor = existsSync(VENDOR);
 
 if (!hasVendor) {
-  console.log('[prepare-dist] No vendor build found — creating shell-only dist (dev mode).');
+	console.log(
+		"[prepare-dist] No vendor build found — creating shell-only dist (dev mode).",
+	);
 }
 
 // --- Step 2: Clean and recreate dist/ ---
 if (existsSync(DIST)) {
-  rmSync(DIST, { recursive: true });
+	rmSync(DIST, { recursive: true });
 }
 mkdirSync(DIST, { recursive: true });
 
 // --- Step 3: Copy the SPA build into dist/app/ (if vendor exists) ---
 if (hasVendor) {
-  const appDir = resolve(DIST, 'app');
-  mkdirSync(appDir, { recursive: true });
-  cpSync(VENDOR, appDir, { recursive: true });
+	const appDir = resolve(DIST, "app");
+	mkdirSync(appDir, { recursive: true });
+	cpSync(VENDOR, appDir, { recursive: true });
 
-  // --- Step 4: Ensure app/index.html exists ---
-  const appIndex = resolve(appDir, 'index.html');
-  const app200 = resolve(appDir, '200.html');
+	// --- Step 4: Ensure app/index.html exists ---
+	const appIndex = resolve(appDir, "index.html");
+	const app200 = resolve(appDir, "200.html");
 
-  if (existsSync(appIndex)) {
-    console.log('[prepare-dist] app/index.html already exists.');
-  } else if (existsSync(app200)) {
-    copyFileSync(app200, appIndex);
-    console.log('[prepare-dist] Copied app/200.html -> app/index.html.');
-  } else {
-    console.error('[prepare-dist] Neither app/index.html nor app/200.html found.');
-    console.error(`[prepare-dist] Contents: ${readdirSync(appDir).join(', ')}`);
-    process.exit(1);
-  }
+	if (existsSync(appIndex)) {
+		console.log("[prepare-dist] app/index.html already exists.");
+	} else if (existsSync(app200)) {
+		copyFileSync(app200, appIndex);
+		console.log("[prepare-dist] Copied app/200.html -> app/index.html.");
+	} else {
+		console.error(
+			"[prepare-dist] Neither app/index.html nor app/200.html found.",
+		);
+		console.error(`[prepare-dist] Contents: ${readdirSync(appDir).join(", ")}`);
+		process.exit(1);
+	}
 
-  // --- Step 5: Inject __SOLANDER__ into app/index.html ---
-  let spaHtml = readFileSync(appIndex, 'utf-8');
-  const injectionScript = `<script>
+	// --- Step 5: Inject __SOLANDER__ into app/index.html ---
+	let spaHtml = readFileSync(appIndex, "utf-8");
+	const injectionScript = `<script>
 globalThis.__SOLANDER__ = {
   serverUrl: null,
   desktop: true
 };
 </script>\n`;
 
-  const firstScript = spaHtml.indexOf('<script');
-  if (firstScript !== -1) {
-    spaHtml = spaHtml.slice(0, firstScript) + injectionScript + spaHtml.slice(firstScript);
-    writeFileSync(appIndex, spaHtml, 'utf-8');
-    console.log('[prepare-dist] Injected __SOLANDER__ into app/index.html.');
-  } else {
-    console.warn('[prepare-dist] No <script> tag in app/index.html — injection skipped.');
-  }
+	const firstScript = spaHtml.indexOf("<script");
+	if (firstScript !== -1) {
+		spaHtml =
+			spaHtml.slice(0, firstScript) +
+			injectionScript +
+			spaHtml.slice(firstScript);
+		writeFileSync(appIndex, spaHtml, "utf-8");
+		console.log("[prepare-dist] Injected __SOLANDER__ into app/index.html.");
+	} else {
+		console.warn(
+			"[prepare-dist] No <script> tag in app/index.html — injection skipped.",
+		);
+	}
 }
 
 // --- Step 6: Copy shell files to dist/ ---
-const shellFiles = ['server-picker.html'];
+const shellFiles = ["server-picker.html"];
 for (const file of shellFiles) {
-  const src = resolve(SHELL, file);
-  if (existsSync(src)) {
-    copyFileSync(src, resolve(DIST, file));
-    console.log(`[prepare-dist] Copied ${file} to dist/.`);
-  } else {
-    console.warn(`[prepare-dist] Shell file not found: ${file}`);
-  }
+	const src = resolve(SHELL, file);
+	if (existsSync(src)) {
+		copyFileSync(src, resolve(DIST, file));
+		console.log(`[prepare-dist] Copied ${file} to dist/.`);
+	} else {
+		console.warn(`[prepare-dist] Shell file not found: ${file}`);
+	}
 }
 
 // --- Step 7: Create the boot loader index.html ---
@@ -141,14 +150,18 @@ const bootLoader = `<!DOCTYPE html>
 
     async function boot() {
       try {
-        const url = await invoke('get_server_url');
+        // Race the IPC call against a 3-second timeout
+        const url = await Promise.race([
+          invoke('get_server_url'),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('IPC timeout')), 3000))
+        ]);
         if (url) {
           window.location.replace('app/index.html');
         } else {
           window.location.replace('server-picker.html');
         }
       } catch {
-        // If IPC fails (e.g., dev mode), go straight to the SPA
+        // If IPC fails or times out, go straight to the SPA
         window.location.replace('app/index.html');
       }
     }
@@ -157,18 +170,18 @@ const bootLoader = `<!DOCTYPE html>
 </body>
 </html>`;
 
-writeFileSync(resolve(DIST, 'index.html'), bootLoader, 'utf-8');
-console.log('[prepare-dist] Created boot loader index.html.');
+writeFileSync(resolve(DIST, "index.html"), bootLoader, "utf-8");
+console.log("[prepare-dist] Created boot loader index.html.");
 
 // --- Step 8: Verify ---
-const required = ['index.html', 'server-picker.html'];
+const required = ["index.html", "server-picker.html"];
 if (hasVendor) {
-  required.push('app/index.html');
+	required.push("app/index.html");
 }
 for (const name of required) {
-  if (!existsSync(resolve(DIST, name))) {
-    console.warn(`[prepare-dist] Warning: expected asset not found: ${name}`);
-  }
+	if (!existsSync(resolve(DIST, name))) {
+		console.warn(`[prepare-dist] Warning: expected asset not found: ${name}`);
+	}
 }
 
-console.log('[prepare-dist] Dist ready for Tauri.');
+console.log("[prepare-dist] Dist ready for Tauri.");
