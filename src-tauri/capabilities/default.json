@@ -1,0 +1,16 @@
+{
+  "identifier": "default",
+  "description": "Default capability set for Solander",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "opener:default",
+    "deep-link:default",
+    "notification:default",
+    {
+      "identifier": "http:default",
+      "allow": [{ "url": "https://*" }, { "url": "http://*" }]
+    }
+  ]
+}
