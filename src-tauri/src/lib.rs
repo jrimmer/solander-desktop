@@ -30,10 +30,9 @@ pub fn run() {
     // argv from a second process is forwarded to the running instance.
     #[cfg(desktop)]
     {
-        builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             // Deep-link event is already triggered by the plugin;
             // argv carries the URL on Windows/Linux.
-            println!("[solander] second-instance argv: {argv:?}");
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_focus();
             }

@@ -1,164 +1,240 @@
-import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
 
 // Mock global fetch for token exchange
 const mockFetch = vi.fn();
-beforeAll(() => {
-  (globalThis as any).fetch = mockFetch;
-});
-afterAll(() => {
-  delete (globalThis as any).fetch;
-});
+
+// Predictable CSRF state for tests
+const PREDICTABLE_STATE = "test-state-value-1234567890abcdef";
 
 // Mock Tauri plugin modules
-vi.mock('@tauri-apps/plugin-opener', () => ({
-  openUrl: vi.fn(),
+vi.mock("@tauri-apps/plugin-opener", () => ({
+	openUrl: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('@tauri-apps/api/core', () => ({
-  invoke: vi.fn(),
+vi.mock("@tauri-apps/api/core", () => ({
+	invoke: vi.fn().mockResolvedValue(null),
 }));
 
-vi.mock('@tauri-apps/plugin-deep-link', () => {
-  let callback: ((urls: string[]) => void) | null = null;
-  return {
-    getCurrent: vi.fn().mockResolvedValue(null),
-    onOpenUrl: vi.fn().mockImplementation((cb: (urls: string[]) => void) => {
-      callback = cb;
-      return Promise.resolve(() => { callback = null; });
-    }),
-    // Expose for tests to trigger the callback
-    _triggerCallback: (urls: string[]) => {
-      if (callback) callback(urls);
-    },
-  };
+vi.mock("@tauri-apps/plugin-deep-link", () => {
+	const callbacks: Array<(urls: string[]) => void> = [];
+	return {
+		getCurrent: vi.fn().mockResolvedValue(null),
+		onOpenUrl: vi.fn().mockImplementation((cb: (urls: string[]) => void) => {
+			callbacks.push(cb);
+			return Promise.resolve(() => {
+				callbacks.length = 0;
+			});
+		}),
+		_trigger: (urls: string[]) => {
+			for (const cb of callbacks) cb(urls);
+		},
+	};
 });
 
-describe('startOAuthFlow', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
+async function triggerDeepLinkCallback(urls: string[]) {
+	const mod: any = await import("@tauri-apps/plugin-deep-link");
+	if (mod._trigger) mod._trigger(urls);
+}
 
-  it('returns error for invalid login URL', async () => {
-    const { startOAuthFlow } = await import('./oauthClient');
-    const result = await startOAuthFlow('https://chat.example.com', 'not-a-url', 'deep-link');
-    expect(result.success).toBe(false);
-  });
+beforeAll(() => {
+	vi.stubGlobal("fetch", mockFetch);
+	(globalThis as any).__SOLANDER_TEST_STATE__ = PREDICTABLE_STATE;
+});
+afterAll(() => {
+	vi.unstubAllGlobals();
+	delete (globalThis as any).__SOLANDER_TEST_STATE__;
+});
 
-  it('returns error when deep-link callback has no code', async () => {
-    const { openUrl } = await import('@tauri-apps/plugin-opener');
-    const deepLink = await import('@tauri-apps/plugin-deep-link');
+describe("startOAuthFlow", () => {
+	it("returns error for invalid login URL", async () => {
+		const { startOAuthFlow } = await import("./oauthClient");
+		const result = await startOAuthFlow(
+			"https://chat.example.com",
+			"not-a-url",
+			"deep-link",
+		);
+		expect(result.success).toBe(false);
+	});
 
-    (openUrl as any).mockResolvedValue(undefined);
+	it("returns error when deep-link callback has no code", async () => {
+		const { startOAuthFlow } = await import("./oauthClient");
+		const promise = startOAuthFlow(
+			"https://chat.example.com",
+			"https://chat.example.com/oauth/authorize",
+			"deep-link",
+		);
 
-    const { startOAuthFlow } = await import('./oauthClient');
-    const promise = startOAuthFlow('https://chat.example.com', 'https://chat.example.com/oauth/authorize', 'deep-link');
+		await new Promise((r) => setTimeout(r, 5));
+		triggerDeepLinkCallback([
+			`solander://auth/callback?state=${PREDICTABLE_STATE}`,
+		]);
 
-    // Trigger the callback
-    await new Promise(r => setTimeout(r, 5));
-    (deepLink as any)._triggerCallback(['solander://auth/callback?state=abc']);
+		const result = await promise;
+		expect(result.success).toBe(false);
+		expect(result).toEqual({
+			success: false,
+			error: "No authorization code in callback",
+		});
+	});
 
-    const result = await promise;
-    expect(result.success).toBe(false);
-    expect(result).toEqual({ success: false, error: 'No authorization code in callback' });
-  });
+	it("returns error when deep-link callback has error param", async () => {
+		const { startOAuthFlow } = await import("./oauthClient");
+		const promise = startOAuthFlow(
+			"https://chat.example.com",
+			"https://chat.example.com/oauth/authorize",
+			"deep-link",
+		);
 
-  it('returns error when deep-link callback has error param', async () => {
-    const { openUrl } = await import('@tauri-apps/plugin-opener');
-    const deepLink = await import('@tauri-apps/plugin-deep-link');
+		await new Promise((r) => setTimeout(r, 5));
+		triggerDeepLinkCallback([
+			`solander://auth/callback?error=access_denied&error_description=User+cancelled&state=${PREDICTABLE_STATE}`,
+		]);
 
-    (openUrl as any).mockResolvedValue(undefined);
+		const result = await promise;
+		expect(result.success).toBe(false);
+		expect(result).toEqual({
+			success: false,
+			error: "OAuth error: access_denied",
+		});
+	});
 
-    const { startOAuthFlow } = await import('./oauthClient');
-    const promise = startOAuthFlow('https://chat.example.com', 'https://chat.example.com/oauth/authorize', 'deep-link');
+	it("handles warm-start deep link via onOpenUrl", async () => {
+		mockFetch.mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve({ token: "bearer-token" }),
+		});
 
-    await new Promise(r => setTimeout(r, 5));
-    (deepLink as any)._triggerCallback(['solander://auth/callback?error=access_denied&error_description=User+cancelled']);
+		const { startOAuthFlow } = await import("./oauthClient");
+		const promise = startOAuthFlow(
+			"https://chat.example.com",
+			"https://chat.example.com/oauth/authorize",
+			"deep-link",
+		);
 
-    const result = await promise;
-    expect(result.success).toBe(false);
-    expect(result).toEqual({ success: false, error: 'OAuth error: access_denied' });
-  });
+		await new Promise((r) => setTimeout(r, 5));
+		triggerDeepLinkCallback([
+			`solander://auth/callback?code=abc123&state=${PREDICTABLE_STATE}`,
+		]);
 
-  it('handles cold-start deep link via getCurrent', async () => {
-    const { openUrl } = await import('@tauri-apps/plugin-opener');
-    const { getCurrent } = await import('@tauri-apps/plugin-deep-link');
+		const result = await promise;
+		expect(result.success).toBe(true);
+		if (result.success) {
+			expect(result.token).toBe("bearer-token");
+		}
+	});
 
-    (openUrl as any).mockResolvedValue(undefined);
-    (getCurrent as any).mockResolvedValue('solander://auth/callback?code=abc123&state=xyz');
-    mockFetch.mockResolvedValue({
-      ok: true,
-      json: () => Promise.resolve({ token: 'bearer-token' }),
-    });
+	it("handles cold-start deep link via getCurrent", async () => {
+		const deepLink = await import("@tauri-apps/plugin-deep-link");
+		deepLink.getCurrent.mockResolvedValue(
+			`solander://auth/callback?code=abc123&state=${PREDICTABLE_STATE}`,
+		);
+		mockFetch.mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve({ token: "bearer-token" }),
+		});
 
-    const { startOAuthFlow } = await import('./oauthClient');
-    const result = await startOAuthFlow('https://chat.example.com', 'https://chat.example.com/oauth/authorize', 'deep-link');
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.token).toBe('bearer-token');
-    }
-  });
+		const { startOAuthFlow } = await import("./oauthClient");
+		const result = await startOAuthFlow(
+			"https://chat.example.com",
+			"https://chat.example.com/oauth/authorize",
+			"deep-link",
+		);
+		expect(result.success).toBe(true);
+		if (result.success) {
+			expect(result.token).toBe("bearer-token");
+		}
+	});
 
-  it('handles warm-start deep link via onOpenUrl', async () => {
-    const { openUrl } = await import('@tauri-apps/plugin-opener');
-    const deepLink = await import('@tauri-apps/plugin-deep-link');
+	it("handles loopback flow", async () => {
+		const { invoke } = await import("@tauri-apps/api/core");
+		(invoke as any).mockImplementation(async (cmd: string) => {
+			if (cmd === "start_oauth_server") return 34567;
+			if (cmd === "poll_oauth_callback")
+				return `http://127.0.0.1:34567/callback?code=abc123&state=${PREDICTABLE_STATE}`;
+			return null;
+		});
+		mockFetch.mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve({ token: "bearer-token" }),
+		});
 
-    (openUrl as any).mockResolvedValue(undefined);
-    mockFetch.mockResolvedValue({
-      ok: true,
-      json: () => Promise.resolve({ token: 'bearer-token' }),
-    });
+		const { startOAuthFlow } = await import("./oauthClient");
+		const result = await startOAuthFlow(
+			"https://chat.example.com",
+			"https://chat.example.com/oauth/authorize",
+			"loopback",
+		);
+		expect(result.success).toBe(true);
+		if (result.success) {
+			expect(result.token).toBe("bearer-token");
+		}
+	});
 
-    const { startOAuthFlow } = await import('./oauthClient');
-    const promise = startOAuthFlow('https://chat.example.com', 'https://chat.example.com/oauth/authorize', 'deep-link');
+	it("handles token exchange failure", async () => {
+		mockFetch.mockRejectedValue(new Error("Token exchange failed"));
 
-    await new Promise(r => setTimeout(r, 5));
-    (deepLink as any)._triggerCallback(['solander://auth/callback?code=abc123&state=xyz']);
+		const { startOAuthFlow } = await import("./oauthClient");
+		const promise = startOAuthFlow(
+			"https://chat.example.com",
+			"https://chat.example.com/oauth/authorize",
+			"deep-link",
+		);
 
-    const result = await promise;
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.token).toBe('bearer-token');
-    }
-  });
+		await new Promise((r) => setTimeout(r, 5));
+		triggerDeepLinkCallback([
+			`solander://auth/callback?code=abc123&state=${PREDICTABLE_STATE}`,
+		]);
 
-  it('handles loopback flow', async () => {
-    const { openUrl } = await import('@tauri-apps/plugin-opener');
-    const { invoke } = await import('@tauri-apps/api/core');
+		const result = await promise;
+		expect(result.success).toBe(false);
+		expect(result).toEqual({ success: false, error: "Token exchange failed" });
+	});
 
-    (openUrl as any).mockResolvedValue(undefined);
-    (invoke as any).mockImplementation(async (cmd: string) => {
-      if (cmd === 'start_oauth_server') return 34567;
-      if (cmd === 'poll_oauth_callback') return 'http://127.0.0.1:34567/callback?code=abc123&state=xyz';
-      return null;
-    });
-    mockFetch.mockResolvedValue({
-      ok: true,
-      json: () => Promise.resolve({ token: 'bearer-token' }),
-    });
+	it("rejects callback with mismatched state (CSRF protection)", async () => {
+		mockFetch.mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve({ token: "should-not-reach-here" }),
+		});
+		const { startOAuthFlow } = await import("./oauthClient");
+		const promise = startOAuthFlow(
+			"https://chat.example.com",
+			"https://chat.example.com/oauth/authorize",
+			"deep-link",
+		);
 
-    const { startOAuthFlow } = await import('./oauthClient');
-    const result = await startOAuthFlow('https://chat.example.com', 'https://chat.example.com/oauth/authorize', 'loopback');
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.token).toBe('bearer-token');
-    }
-  });
+		await new Promise((r) => setTimeout(r, 5));
+		triggerDeepLinkCallback([
+			"solander://auth/callback?code=abc123&state=wrong-state-value",
+		]);
 
-  it('handles token exchange failure', async () => {
-    const { openUrl } = await import('@tauri-apps/plugin-opener');
-    const deepLink = await import('@tauri-apps/plugin-deep-link');
+		const result = await promise;
+		expect(result.success).toBe(false);
+		expect(result).toEqual({
+			success: false,
+			error: "CSRF validation failed: state mismatch",
+		});
+	});
 
-    (openUrl as any).mockResolvedValue(undefined);
-    mockFetch.mockRejectedValue(new Error('Token exchange failed'));
+	it("rejects callback with missing state (CSRF protection)", async () => {
+		mockFetch.mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve({ token: "should-not-reach-here" }),
+		});
+		const { startOAuthFlow } = await import("./oauthClient");
+		const promise = startOAuthFlow(
+			"https://chat.example.com",
+			"https://chat.example.com/oauth/authorize",
+			"deep-link",
+		);
 
-    const { startOAuthFlow } = await import('./oauthClient');
-    const promise = startOAuthFlow('https://chat.example.com', 'https://chat.example.com/oauth/authorize', 'deep-link');
+		await new Promise((r) => setTimeout(r, 5));
+		triggerDeepLinkCallback(["solander://auth/callback?code=abc123"]);
 
-    await new Promise(r => setTimeout(r, 5));
-    (deepLink as any)._triggerCallback(['solander://auth/callback?code=abc123&state=xyz']);
-
-    const result = await promise;
-    expect(result.success).toBe(false);
-    expect(result).toEqual({ success: false, error: 'Token exchange failed' });
-  });
+		const result = await promise;
+		expect(result.success).toBe(false);
+		expect(result).toEqual({
+			success: false,
+			error: "CSRF validation failed: state mismatch",
+		});
+	});
 });

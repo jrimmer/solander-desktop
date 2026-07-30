@@ -8,22 +8,67 @@
  * The Chatto server is the OAuth client — it redirects back to the web client
  * after the user authenticates. Solander intercepts that redirect and extracts
  * the authorization code, then exchanges it for a bearer token.
+ *
+ * Security: CSRF state validation is REQUIRED. A random state value is generated
+ * before opening the browser and validated when the callback arrives. Callbacks
+ * with mismatched or missing state are rejected.
  */
 
-import { openUrl } from '@tauri-apps/plugin-opener';
-import { invoke } from '@tauri-apps/api/core';
-import { getCurrent, onOpenUrl } from '@tauri-apps/plugin-deep-link';
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { invoke } from "@tauri-apps/api/core";
+import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 
-export type OAuthStrategy = 'deep-link' | 'loopback';
+export type OAuthStrategy = "deep-link" | "loopback";
 
-export type OAuthResult = {
-  success: true;
-  token: string;
-  serverUrl: string;
-} | {
-  success: false;
-  error: string;
-};
+export type OAuthResult =
+	| { success: true; token: string; serverUrl: string }
+	| { success: false; error: string };
+
+/**
+ * Generate a cryptographically random state value for CSRF protection.
+ * Uses crypto.getRandomValues when available, falls back to Math.random.
+ */
+function generateState(): string {
+	// Allow test override for predictable state
+	if (
+		typeof globalThis !== "undefined" &&
+		(globalThis as any).__SOLANDER_TEST_STATE__
+	) {
+		return (globalThis as any).__SOLANDER_TEST_STATE__;
+	}
+	if (typeof crypto !== "undefined" && crypto.getRandomValues) {
+		const bytes = new Uint8Array(32);
+		crypto.getRandomValues(bytes);
+		return Array.from(bytes)
+			.map((b) => b.toString(16).padStart(2, "0"))
+			.join("");
+	}
+	// Fallback for non-browser environments
+	return (
+		Math.random().toString(36).substring(2, 15) +
+		Math.random().toString(36).substring(2, 15)
+	);
+}
+
+/**
+ * Validate that a callback URL is a legitimate OAuth redirect for the solander:// scheme.
+ * Returns the parsed URL on success, or null if the URL is invalid.
+ */
+function validateCallbackUrl(url: string): URL | null {
+	try {
+		const parsed = new URL(url);
+		if (
+			parsed.protocol !== "solander:" ||
+			parsed.hostname !== "auth" ||
+			parsed.pathname !== "/callback"
+		) {
+			return null;
+		}
+		return parsed;
+	} catch {
+		return null;
+	}
+}
 
 /**
  * Start the OAuth flow for a given server.
@@ -38,97 +83,120 @@ export type OAuthResult = {
  * @returns The OAuth result with the bearer token
  */
 export async function startOAuthFlow(
-  serverUrl: string,
-  loginUrl: string,
-  strategy: OAuthStrategy = 'deep-link',
+	serverUrl: string,
+	loginUrl: string,
+	strategy: OAuthStrategy = "deep-link",
 ): Promise<OAuthResult> {
-  try {
-    if (strategy === 'deep-link') {
-      return await deepLinkFlow(serverUrl, loginUrl);
-    } else {
-      return await loopbackFlow(serverUrl, loginUrl);
-    }
-  } catch (err) {
-    return {
-      success: false,
-      error: err instanceof Error ? err.message : 'OAuth flow failed',
-    };
-  }
+	try {
+		if (strategy === "deep-link") {
+			return await deepLinkFlow(serverUrl, loginUrl);
+		} else {
+			return await loopbackFlow(serverUrl, loginUrl);
+		}
+	} catch (err) {
+		return {
+			success: false,
+			error: err instanceof Error ? err.message : "OAuth flow failed",
+		};
+	}
 }
 
 /**
- * Deep-link OAuth strategy.
+ * Deep-link OAuth strategy with CSRF state validation.
  *
- * 1. Opens the system browser at the server's login URL
- * 2. Server redirects to solander://auth/callback?code=...&state=...
- * 3. The deep-link plugin captures the callback
- * 4. The code is exchanged for a bearer token
+ * 1. Generates a random state value
+ * 2. Appends it to the login URL
+ * 3. Opens the system browser at the login URL
+ * 4. Server redirects to solander://auth/callback?code=...&state=...
+ * 5. The deep-link plugin captures the callback
+ * 6. Validates the state parameter matches the generated value
+ * 7. Exchanges the code for a bearer token
  */
 async function deepLinkFlow(
-  serverUrl: string,
-  loginUrl: string,
+	serverUrl: string,
+	loginUrl: string,
 ): Promise<OAuthResult> {
-  // Validate the login URL
-  try {
-    new URL(loginUrl);
-  } catch {
-    return { success: false, error: 'Invalid login URL' };
-  }
-  // Set up a promise that resolves when the deep-link callback arrives
-  const callbackPromise = new Promise<string>((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      reject(new Error('OAuth timed out after 5 minutes'));
-    }, 5 * 60 * 1000);
+	// Validate the login URL
+	let parsedLoginUrl: URL;
+	try {
+		parsedLoginUrl = new URL(loginUrl);
+	} catch {
+		return { success: false, error: "Invalid login URL" };
+	}
 
-    // Listen for warm-start deep links (app already running)
-    const unlisten = onOpenUrl((urls: string[]) => {
-      for (const url of urls) {
-        if (url.startsWith('solander://auth/callback')) {
-          clearTimeout(timeout);
-          unlisten.then((fn: () => void) => fn());
-          resolve(url);
-          return;
-        }
-      }
-    });
+	// Generate CSRF state and append to login URL
+	const state = generateState();
+	parsedLoginUrl.searchParams.set("state", state);
 
-    // Also check for cold-start deep link (app launched via URL)
-    getCurrent().then((url: string | null) => {
-      if (url && url.startsWith('solander://auth/callback')) {
-        clearTimeout(timeout);
-        resolve(url);
-      }
-    }).catch(() => {
-      // No cold-start deep link — that's fine
-    });
-  });
+	// Set up a promise that resolves when the deep-link callback arrives
+	const callbackPromise = new Promise<string>((resolve, reject) => {
+		const timeout = setTimeout(
+			() => {
+				reject(new Error("OAuth timed out after 5 minutes"));
+			},
+			5 * 60 * 1000,
+		);
 
-  // Open the system browser at the login URL
-  await openUrl(loginUrl);
+		// Listen for warm-start deep links (app already running)
+		const unlisten = onOpenUrl((urls: string[]) => {
+			for (const url of urls) {
+				const parsed = validateCallbackUrl(url);
+				if (parsed) {
+					clearTimeout(timeout);
+					unlisten.then((fn: () => void) => fn());
+					resolve(url);
+					return;
+				}
+			}
+		});
 
-  // Wait for the callback
-  const callbackUrl = await callbackPromise;
+		// Also check for cold-start deep link (app launched via URL)
+		getCurrent()
+			.then((url: string | null) => {
+				if (url) {
+					const parsed = validateCallbackUrl(url);
+					if (parsed) {
+						clearTimeout(timeout);
+						resolve(url);
+					}
+				}
+			})
+			.catch(() => {
+				// No cold-start deep link — that's fine
+			});
+	});
 
-  // Extract the authorization code from the callback URL
-  let parsed: URL;
-  try {
-    parsed = new URL(callbackUrl);
-  } catch {
-    return { success: false, error: 'Invalid callback URL' };
-  }
-  const code = parsed.searchParams.get('code');
-  const error = parsed.searchParams.get('error');
+	// Open the system browser at the login URL (with state parameter)
+	await openUrl(parsedLoginUrl.toString());
 
-  if (error) {
-    return { success: false, error: `OAuth error: ${error}` };
-  }
+	// Wait for the callback
+	const callbackUrl = await callbackPromise;
 
-  if (!code) {
-    return { success: false, error: 'No authorization code in callback' };
-  }
+	// Parse and validate the callback URL
+	const parsed = validateCallbackUrl(callbackUrl);
+	if (!parsed) {
+		return { success: false, error: "Invalid callback URL" };
+	}
 
-  // Exchange the code for a token via the server
-  return await exchangeCode(serverUrl, code);
+	// CSRF: validate state parameter
+	const callbackState = parsed.searchParams.get("state");
+	if (!callbackState || callbackState !== state) {
+		return { success: false, error: "CSRF validation failed: state mismatch" };
+	}
+
+	const code = parsed.searchParams.get("code");
+	const error = parsed.searchParams.get("error");
+
+	if (error) {
+		return { success: false, error: `OAuth error: ${error}` };
+	}
+
+	if (!code) {
+		return { success: false, error: "No authorization code in callback" };
+	}
+
+	// Exchange the code for a token via the server
+	return await exchangeCode(serverUrl, code);
 }
 
 /**
@@ -139,70 +207,90 @@ async function deepLinkFlow(
  *    redirect_uri=http://127.0.0.1:<port>/callback
  * 3. The localhost server captures the redirect
  * 4. The code is exchanged for a bearer token
+ *
+ * NOTE: The loopback strategy requires Rust backend commands (start_oauth_server,
+ * poll_oauth_callback) that are not yet implemented. This function will fail
+ * at runtime until those commands are registered in lib.rs.
  */
 async function loopbackFlow(
-  serverUrl: string,
-  loginUrl: string,
+	serverUrl: string,
+	loginUrl: string,
 ): Promise<OAuthResult> {
-  // Use the Tauri backend to start a localhost server and get the port
-  const port: number = await invoke('start_oauth_server');
-  const redirectUri = `http://127.0.0.1:${port}/callback`;
+	// Use the Tauri backend to start a localhost server and get the port
+	const port: number = await invoke("start_oauth_server");
+	const redirectUri = `http://127.0.0.1:${port}/callback`;
 
-  // Append redirect_uri to the login URL
-  let url: URL;
-  try {
-    url = new URL(loginUrl);
-  } catch {
-    return { success: false, error: 'Invalid login URL' };
-  }
-  url.searchParams.set('redirect_uri', redirectUri);
+	// Validate and prepare the login URL
+	let url: URL;
+	try {
+		url = new URL(loginUrl);
+	} catch {
+		return { success: false, error: "Invalid login URL" };
+	}
+	url.searchParams.set("redirect_uri", redirectUri);
 
-  // Set up a promise that resolves when the callback arrives
-  const callbackPromise = new Promise<string>((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      reject(new Error('OAuth timed out after 5 minutes'));
-    }, 5 * 60 * 1000);
+	// Generate CSRF state and append to login URL
+	const state = generateState();
+	url.searchParams.set("state", state);
 
-    // Listen for the callback from the localhost server
-    const interval = setInterval(async () => {
-      try {
-        const result: string | null = await invoke('poll_oauth_callback', { port });
-        if (result) {
-          clearTimeout(timeout);
-          clearInterval(interval);
-          resolve(result);
-        }
-      } catch {
-        // Server not ready yet
-      }
-    }, 500);
-  });
+	// Set up a promise that resolves when the callback arrives
+	const callbackPromise = new Promise<string>((resolve, reject) => {
+		const timeout = setTimeout(
+			() => {
+				reject(new Error("OAuth timed out after 5 minutes"));
+			},
+			5 * 60 * 1000,
+		);
 
-  // Open the system browser at the login URL
-  await openUrl(url.toString());
+		// Listen for the callback from the localhost server
+		const interval = setInterval(async () => {
+			try {
+				const result: string | null = await invoke("poll_oauth_callback", {
+					port,
+				});
+				if (result) {
+					clearTimeout(timeout);
+					clearInterval(interval);
+					resolve(result);
+				}
+			} catch {
+				// Server not ready yet
+			}
+		}, 500);
+	});
 
-  // Wait for the callback
-  const callbackUrl = await callbackPromise;
+	// Open the system browser at the login URL
+	await openUrl(url.toString());
 
-  // Extract the authorization code
-  let parsed: URL;
-  try {
-    parsed = new URL(callbackUrl);
-  } catch {
-    return { success: false, error: 'Invalid callback URL' };
-  }
-  const code = parsed.searchParams.get('code');
-  const error = parsed.searchParams.get('error');
+	// Wait for the callback
+	const callbackUrl = await callbackPromise;
 
-  if (error) {
-    return { success: false, error: `OAuth error: ${error}` };
-  }
+	// Parse the callback URL
+	let parsed: URL;
+	try {
+		parsed = new URL(callbackUrl);
+	} catch {
+		return { success: false, error: "Invalid callback URL" };
+	}
 
-  if (!code) {
-    return { success: false, error: 'No authorization code in callback' };
-  }
+	// CSRF: validate state parameter
+	const callbackState = parsed.searchParams.get("state");
+	if (!callbackState || callbackState !== state) {
+		return { success: false, error: "CSRF validation failed: state mismatch" };
+	}
 
-  return await exchangeCode(serverUrl, code);
+	const code = parsed.searchParams.get("code");
+	const error = parsed.searchParams.get("error");
+
+	if (error) {
+		return { success: false, error: `OAuth error: ${error}` };
+	}
+
+	if (!code) {
+		return { success: false, error: "No authorization code in callback" };
+	}
+
+	return await exchangeCode(serverUrl, code);
 }
 
 /**
@@ -212,33 +300,39 @@ async function loopbackFlow(
  * This uses tauri-plugin-http to bypass CORS.
  */
 async function exchangeCode(
-  serverUrl: string,
-  code: string,
+	serverUrl: string,
+	code: string,
 ): Promise<OAuthResult> {
-  try {
-    const tokenUrl = new URL('/api/connect/chatto.auth.v1.AuthService/ExchangeToken', serverUrl).toString();
-    const response = await fetch(tokenUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code }),
-    });
+	try {
+		const tokenUrl = new URL(
+			"/api/connect/chatto.auth.v1.AuthService/ExchangeToken",
+			serverUrl,
+		).toString();
+		const response = await fetch(tokenUrl, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ code }),
+		});
 
-    if (!response.ok) {
-      return { success: false, error: `Token exchange failed: ${response.status}` };
-    }
+		if (!response.ok) {
+			return {
+				success: false,
+				error: `Token exchange failed: ${response.status}`,
+			};
+		}
 
-    const data = await response.json();
-    const token = data?.token || data?.accessToken;
+		const data = await response.json();
+		const token = data?.token || data?.accessToken;
 
-    if (!token) {
-      return { success: false, error: 'No token in exchange response' };
-    }
+		if (!token) {
+			return { success: false, error: "No token in exchange response" };
+		}
 
-    return { success: true, token, serverUrl };
-  } catch (err) {
-    return {
-      success: false,
-      error: err instanceof Error ? err.message : 'Token exchange failed',
-    };
-  }
+		return { success: true, token, serverUrl };
+	} catch (err) {
+		return {
+			success: false,
+			error: err instanceof Error ? err.message : "Token exchange failed",
+		};
+	}
 }
