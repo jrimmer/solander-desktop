@@ -3,14 +3,17 @@
 /**
  * Prepare the frontend dist for Tauri.
  *
- * Tauri expects index.html as the entry page. The Chatto frontend uses
- * adapter-static with fallback: '200.html', which produces no index.html.
- * This script copies 200.html -> index.html so Tauri has an entry point.
+ * 1. Tauri expects index.html as the entry page. The Chatto frontend uses
+ *    adapter-static with fallback: '200.html', which produces no index.html.
+ *    This script copies 200.html -> index.html so Tauri has an entry point.
  *
- * Also verifies the build output is complete.
+ * 2. Injects a <script> tag into index.html that sets __SOLANDER__ before
+ *    the SPA module evaluates. This is the server-URL injection seam that
+ *    lets the frontend discover its API origin from the configured server
+ *    instead of tauri://localhost.
  */
 
-import { copyFileSync, existsSync, readdirSync } from 'node:fs';
+import { copyFileSync, existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -24,7 +27,7 @@ if (!existsSync(DIST)) {
   process.exit(1);
 }
 
-// Check for index.html
+// Step 1: Ensure index.html exists
 const hasIndex = existsSync(resolve(DIST, 'index.html'));
 const has200 = existsSync(resolve(DIST, '200.html'));
 
@@ -37,6 +40,27 @@ if (hasIndex) {
   console.error('[prepare-dist] Neither index.html nor 200.html found in build output.');
   console.error(`[prepare-dist] Contents: ${readdirSync(DIST).join(', ')}`);
   process.exit(1);
+}
+
+// Step 2: Inject __SOLANDER__ global into index.html
+const indexPath = resolve(DIST, 'index.html');
+let html = readFileSync(indexPath, 'utf-8');
+
+const injectionScript = `<script>
+globalThis.__SOLANDER__ = {
+  serverUrl: null,
+  desktop: true
+};
+</script>\n`;
+
+// Insert before the first <script> tag (the SPA entry module)
+const firstScriptIndex = html.indexOf('<script');
+if (firstScriptIndex !== -1) {
+  html = html.slice(0, firstScriptIndex) + injectionScript + html.slice(firstScriptIndex);
+  writeFileSync(indexPath, html, 'utf-8');
+  console.log('[prepare-dist] Injected __SOLANDER__ global into index.html.');
+} else {
+  console.warn('[prepare-dist] No <script> tag found in index.html — injection skipped.');
 }
 
 // Verify key assets exist
