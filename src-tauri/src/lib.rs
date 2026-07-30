@@ -45,11 +45,16 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_http::init())
         .setup(|app| {
-            let app_data_dir = app
-                .path()
-                .app_data_dir()
-                .expect("failed to resolve app data dir");
-            std::fs::create_dir_all(&app_data_dir).ok();
+            let app_data_dir = match app.handle().path().app_data_dir() {
+                Ok(dir) => dir,
+                Err(e) => {
+                    eprintln!("[solander] failed to resolve app data dir: {e}");
+                    return Err(Box::new(e));
+                }
+            };
+            if let Err(e) = std::fs::create_dir_all(&app_data_dir) {
+                eprintln!("[solander] failed to create app data dir: {e}");
+            }
             let store = Arc::new(ConfigStore::new(app_data_dir));
             app.manage(store);
             Ok(())
