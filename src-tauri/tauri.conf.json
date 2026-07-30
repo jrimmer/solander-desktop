@@ -5,8 +5,8 @@
   "identifier": "com.solander.app",
   "build": {
     "devUrl": "http://localhost:5173",
-    "frontendDist": "../vendor/frontend",
-    "beforeDevCommand": "pnpm fetch-frontend && pnpm prepare-dist",
+    "frontendDist": "../dist",
+    "beforeDevCommand": "pnpm prepare-dist",
     "beforeBuildCommand": "pnpm fetch-frontend && pnpm prepare-dist"
   },
   "app": {

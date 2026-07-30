@@ -1,74 +1,174 @@
 #!/usr/bin/env node
 
 /**
- * Prepare the frontend dist for Tauri.
+ * Prepare the Tauri dist directory.
  *
- * 1. Tauri expects index.html as the entry page. The Chatto frontend uses
- *    adapter-static with fallback: '200.html', which produces no index.html.
- *    This script copies 200.html -> index.html so Tauri has an entry point.
+ * Assembles dist/ with:
+ *   dist/index.html          — boot loader (checks for configured server)
+ *   dist/server-picker.html  — first-run server URL entry form
+ *   dist/app/                — the Chatto SPA build (with __SOLANDER__ injection)
  *
- * 2. Injects a <script> tag into index.html that sets __SOLANDER__ before
- *    the SPA module evaluates. This is the server-URL injection seam that
- *    lets the frontend discover its API origin from the configured server
- *    instead of tauri://localhost.
+ * The boot loader checks if a server URL is configured via IPC.
+ * If configured, it redirects to app/index.html (the SPA).
+ * If not, it shows the server picker.
  */
 
-import { copyFileSync, existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import {
+  copyFileSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '..');
-const DIST = resolve(ROOT, 'vendor', 'frontend');
+const VENDOR = resolve(ROOT, 'vendor', 'frontend');
+const DIST = resolve(ROOT, 'dist');
+const SHELL = resolve(ROOT, 'src', 'shell');
 
-if (!existsSync(DIST)) {
-  console.error(`[prepare-dist] Build output not found at ${DIST}`);
-  console.error('[prepare-dist] Run `pnpm fetch-frontend` first.');
-  process.exit(1);
+// --- Step 1: Check if vendor build exists ---
+const hasVendor = existsSync(VENDOR);
+
+if (!hasVendor) {
+  console.log('[prepare-dist] No vendor build found — creating shell-only dist (dev mode).');
 }
 
-// Step 1: Ensure index.html exists
-const hasIndex = existsSync(resolve(DIST, 'index.html'));
-const has200 = existsSync(resolve(DIST, '200.html'));
-
-if (hasIndex) {
-  console.log('[prepare-dist] index.html already exists — no rename needed.');
-} else if (has200) {
-  copyFileSync(resolve(DIST, '200.html'), resolve(DIST, 'index.html'));
-  console.log('[prepare-dist] Copied 200.html -> index.html for Tauri entry.');
-} else {
-  console.error('[prepare-dist] Neither index.html nor 200.html found in build output.');
-  console.error(`[prepare-dist] Contents: ${readdirSync(DIST).join(', ')}`);
-  process.exit(1);
+// --- Step 2: Clean and recreate dist/ ---
+if (existsSync(DIST)) {
+  rmSync(DIST, { recursive: true });
 }
+mkdirSync(DIST, { recursive: true });
 
-// Step 2: Inject __SOLANDER__ global into index.html
-const indexPath = resolve(DIST, 'index.html');
-let html = readFileSync(indexPath, 'utf-8');
+// --- Step 3: Copy the SPA build into dist/app/ (if vendor exists) ---
+if (hasVendor) {
+  const appDir = resolve(DIST, 'app');
+  mkdirSync(appDir, { recursive: true });
+  cpSync(VENDOR, appDir, { recursive: true });
 
-const injectionScript = `<script>
+  // --- Step 4: Ensure app/index.html exists ---
+  const appIndex = resolve(appDir, 'index.html');
+  const app200 = resolve(appDir, '200.html');
+
+  if (existsSync(appIndex)) {
+    console.log('[prepare-dist] app/index.html already exists.');
+  } else if (existsSync(app200)) {
+    copyFileSync(app200, appIndex);
+    console.log('[prepare-dist] Copied app/200.html -> app/index.html.');
+  } else {
+    console.error('[prepare-dist] Neither app/index.html nor app/200.html found.');
+    console.error(`[prepare-dist] Contents: ${readdirSync(appDir).join(', ')}`);
+    process.exit(1);
+  }
+
+  // --- Step 5: Inject __SOLANDER__ into app/index.html ---
+  let spaHtml = readFileSync(appIndex, 'utf-8');
+  const injectionScript = `<script>
 globalThis.__SOLANDER__ = {
   serverUrl: null,
   desktop: true
 };
 </script>\n`;
 
-// Insert before the first <script> tag (the SPA entry module)
-const firstScriptIndex = html.indexOf('<script');
-if (firstScriptIndex !== -1) {
-  html = html.slice(0, firstScriptIndex) + injectionScript + html.slice(firstScriptIndex);
-  writeFileSync(indexPath, html, 'utf-8');
-  console.log('[prepare-dist] Injected __SOLANDER__ global into index.html.');
-} else {
-  console.warn('[prepare-dist] No <script> tag found in index.html — injection skipped.');
+  const firstScript = spaHtml.indexOf('<script');
+  if (firstScript !== -1) {
+    spaHtml = spaHtml.slice(0, firstScript) + injectionScript + spaHtml.slice(firstScript);
+    writeFileSync(appIndex, spaHtml, 'utf-8');
+    console.log('[prepare-dist] Injected __SOLANDER__ into app/index.html.');
+  } else {
+    console.warn('[prepare-dist] No <script> tag in app/index.html — injection skipped.');
+  }
 }
 
-// Verify key assets exist
-const required = ['index.html', '_app', '.vite'];
+// --- Step 6: Copy shell files to dist/ ---
+const shellFiles = ['server-picker.html'];
+for (const file of shellFiles) {
+  const src = resolve(SHELL, file);
+  if (existsSync(src)) {
+    copyFileSync(src, resolve(DIST, file));
+    console.log(`[prepare-dist] Copied ${file} to dist/.`);
+  } else {
+    console.warn(`[prepare-dist] Shell file not found: ${file}`);
+  }
+}
+
+// --- Step 7: Create the boot loader index.html ---
+const bootLoader = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Solander</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      margin: 0;
+    }
+    .loader {
+      text-align: center;
+    }
+    .spinner {
+      width: 32px;
+      height: 32px;
+      border: 3px solid #2a2a4e;
+      border-top-color: #4a90d9;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin: 0 auto 16px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    p { color: #a0a0b0; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <div class="loader">
+    <div class="spinner"></div>
+    <p>Starting Solander...</p>
+  </div>
+  <script type="module">
+    import { invoke } from '@tauri-apps/api/core';
+
+    async function boot() {
+      try {
+        const url = await invoke('get_server_url');
+        if (url) {
+          window.location.replace('app/index.html');
+        } else {
+          window.location.replace('server-picker.html');
+        }
+      } catch {
+        // If IPC fails (e.g., dev mode), go straight to the SPA
+        window.location.replace('app/index.html');
+      }
+    }
+    boot();
+  </script>
+</body>
+</html>`;
+
+writeFileSync(resolve(DIST, 'index.html'), bootLoader, 'utf-8');
+console.log('[prepare-dist] Created boot loader index.html.');
+
+// --- Step 8: Verify ---
+const required = ['index.html', 'server-picker.html'];
+if (hasVendor) {
+  required.push('app/index.html');
+}
 for (const name of required) {
   if (!existsSync(resolve(DIST, name))) {
     console.warn(`[prepare-dist] Warning: expected asset not found: ${name}`);
   }
 }
 
-console.log('[prepare-dist] Frontend dist ready for Tauri.');
+console.log('[prepare-dist] Dist ready for Tauri.');
