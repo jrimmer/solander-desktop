@@ -25,6 +25,10 @@
 // These are injected by Tauri before our script runs; they have no types.
 interface TauriInternals {
 	invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
+	transformCallback: (
+		callback: (response: unknown) => void,
+		once?: boolean,
+	) => number;
 }
 
 interface SolanderGlobal {
@@ -117,10 +121,24 @@ interface TauriHttpResponse {
 	}
 
 	// Check if a URL is a SPA static asset (/_app/...).
+	// Matches both tauri://localhost/_app/... and relative /_app/...
 	function isSpaAsset(url: string): boolean {
 		return (
 			url.indexOf("tauri://localhost/_app/") === 0 ||
-			url.indexOf("http://tauri.localhost/_app/") === 0
+			url.indexOf("http://tauri.localhost/_app/") === 0 ||
+			url.indexOf("/_app/") === 0 ||
+			url === "/_app/version.json" ||
+			url.indexOf("/_app/") === 0
+		);
+	}
+
+	// Check if a relative path is a SPA asset that should be served by Tauri,
+	// not rewritten to the server URL.
+	function isRelativeSpaAsset(url: string): boolean {
+		return (
+			url.indexOf("/_app/") === 0 ||
+			url.indexOf("/@vite/") === 0 ||
+			url.indexOf("/node_modules/") === 0
 		);
 	}
 
@@ -342,7 +360,8 @@ interface TauriHttpResponse {
 		// Rewrite relative paths (e.g. /auth/login, /api/connect/...) to the
 		// configured server URL. Under tauri://localhost these would resolve
 		// against the asset protocol and hit no Chatto server.
-		if (isRelativePath(url)) {
+		// BUT: SPA static assets (/_app/...) must be served by Tauri locally.
+		if (isRelativePath(url) && !isRelativeSpaAsset(url)) {
 			var fullUrl = getServerUrl() + url;
 			return tauriFetch(fullUrl, init);
 		}
@@ -495,6 +514,19 @@ interface TauriHttpResponse {
 		}
 	}
 
+	// Fallback polling for deep-link callbacks — used when the event
+	// listener can't be registered (e.g. transformCallback unavailable).
+	function startFallbackPolling(intervalMs: number) {
+		var pollFallback = setInterval(() => {
+			tauriInvoke("take_pending_callback")
+				.then((url) => {
+					if (url) handleDeepLinkUrl(url as string);
+				})
+				.catch(() => {});
+		}, intervalMs);
+		globalThis.__SOLANDER__._pollFallback = pollFallback;
+	}
+
 	// Event-driven deep-link handling via Tauri's event system.
 	// We listen for the 'deep-link://new-url' event directly through
 	// __TAURI_INTERNALS__ instead of polling take_pending_callback().
@@ -509,16 +541,41 @@ interface TauriHttpResponse {
 			.catch(() => {});
 
 		// Listen for live deep-link events via the event system.
-		// We use the raw event listen API to avoid @tauri-apps/api module
-		// resolution issues in the webview.
+		// We use the raw event listen API with transformCallback to register
+		// a proper callback handler (ES module imports hang in the webview).
+		var internals = window.__TAURI_INTERNALS__;
+		if (
+			!internals ||
+			typeof internals.transformCallback !== "function" ||
+			typeof internals.invoke !== "function"
+		) {
+			console.warn(
+				TAG,
+				"Tauri internals not available for event listen, falling back to polling",
+			);
+			startFallbackPolling(1000);
+			return;
+		}
+		var handlerId = internals.transformCallback((event: unknown) => {
+			try {
+				var payload = (event as { payload?: { url?: string } })
+					?.payload;
+				var url = payload?.url;
+				if (url) handleDeepLinkUrl(url);
+			} catch (e) {
+				console.error(TAG, "deep-link event handler error:", e);
+			}
+		});
 		tauriInvoke("plugin:event|listen", {
 			event: "deep-link://new-url",
 			target: { kind: "Any" },
+			handler: handlerId,
 		})
 			.then((eventId) => {
 				// Store the event id so we can unlisten if needed
-				globalThis.__SOLANDER__._deepLinkEventId = eventId as number;
-				// The event arrives via __TAURI_INTERNALS__.invoke callbacks;
+				globalThis.__SOLANDER__._deepLinkEventId =
+					eventId as number;
+				// The event arrives via __TAURI_INTERNALS__ callbacks;
 				// we also poll take_pending_callback as a fallback for events
 				// that arrive while the listener is being set up.
 				var pollFallback = setInterval(() => {
@@ -538,15 +595,7 @@ interface TauriHttpResponse {
 					"failed to register deep-link event listener, falling back to polling:",
 					e,
 				);
-				// Fall back to polling if event registration fails
-				var pollFallback = setInterval(() => {
-					tauriInvoke("take_pending_callback")
-						.then((url) => {
-							if (url) handleDeepLinkUrl(url as string);
-						})
-						.catch(() => {});
-				}, 1000);
-				globalThis.__SOLANDER__._pollFallback = pollFallback;
+				startFallbackPolling(1000);
 			});
 	}
 

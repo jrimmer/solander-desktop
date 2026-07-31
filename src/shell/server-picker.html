@@ -227,8 +227,9 @@
           // Also store in localStorage for the SPA to read
           localStorage.setItem("solander-server-url", url.replace(/\/+$/, ""));
 
-          // Step 3: Reload to boot the SPA
-          window.location.assign("/index.html");
+          // Step 3: Navigate to the SPA root (NOT /index.html, which
+          // SvelteKit's router rejects with a 404 loop)
+          window.location.assign("/");
         } catch (err) {
           console.error("Connection error:", err);
           showError("Could not reach the server. Check the URL and try again.");
