@@ -4,3 +4,6 @@ target/
 dist/
 *.log
 .DS_Store
+.build/
+.pi-subagents/
+vendor/
