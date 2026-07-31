@@ -558,8 +558,7 @@ interface TauriHttpResponse {
 		}
 		var handlerId = internals.transformCallback((event: unknown) => {
 			try {
-				var payload = (event as { payload?: { url?: string } })
-					?.payload;
+				var payload = (event as { payload?: { url?: string } })?.payload;
 				var url = payload?.url;
 				if (url) handleDeepLinkUrl(url);
 			} catch (e) {
@@ -573,8 +572,7 @@ interface TauriHttpResponse {
 		})
 			.then((eventId) => {
 				// Store the event id so we can unlisten if needed
-				globalThis.__SOLANDER__._deepLinkEventId =
-					eventId as number;
+				globalThis.__SOLANDER__._deepLinkEventId = eventId as number;
 				// The event arrives via __TAURI_INTERNALS__ callbacks;
 				// we also poll take_pending_callback as a fallback for events
 				// that arrive while the listener is being set up.
