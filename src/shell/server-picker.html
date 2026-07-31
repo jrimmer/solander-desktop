@@ -190,6 +190,29 @@
           return;
         }
 
+        // SSRF guard: reject internal/loopback addresses. The HTTP plugin
+        // scope allows https://* (required for user-configurable servers),
+        // so this validation is the primary SSRF mitigation at entry time.
+        const host = parsed.hostname.toLowerCase();
+        if (
+          host === "localhost" ||
+          host === "127.0.0.1" ||
+          host === "0.0.0.0" ||
+          host === "::1" ||
+          host.endsWith(".localhost") ||
+          host.startsWith("127.") ||
+          host.startsWith("10.") ||
+          host.startsWith("192.168.") ||
+          /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host) ||
+          host.startsWith("169.254.") ||
+          host.startsWith("::ffff:7f") // IPv4-mapped loopback
+        ) {
+          showError(
+            "Internal/local addresses are not allowed. Enter a public server URL.",
+          );
+          return;
+        }
+
         setLoading(true);
 
         try {
