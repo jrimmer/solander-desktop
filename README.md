@@ -2,7 +2,7 @@
 
 A desktop client for [Chatto](https://github.com/chattocorp/chatto) — the open-source chat platform at [chatto.run](https://chatto.run).
 
-Solander wraps the Chatto web frontend in a native desktop shell using [Tauri](https://tauri.app), giving you a standalone app with native OS notifications, dock/taskbar badges, and system-browser-based OAuth sign-in — no browser tab required.
+Solander is a thin desktop wrapper around the excellent Chatto web frontend, built by the [Chatto team](https://github.com/chattocorp). It wraps their frontend in a native desktop shell using [Tauri](https://tauri.app), giving you a standalone app with native OS notifications, dock/taskbar badges, and system-browser-based OAuth sign-in — no browser tab required. All credit for the chat UI and experience belongs to the Chatto team; Solander simply packages it for the desktop.
 
 > ⚠️ **Text chat only.** Voice, video, and screen share are not yet supported. See [Voice & Video](#voice--video) below. Contributions welcome via PR.
 
