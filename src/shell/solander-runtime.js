@@ -2,34 +2,50 @@
 // This script runs BEFORE the SPA's own scripts (it is a regular <script>, not
 // a module, while SvelteKit's entry is type="module" and therefore deferred).
 //
-// It does six things:
+// It does eight things:
 //   1. Sets up the __SOLANDER__ global so the SPA can detect it's in desktop mode
 //   2. Disables service worker registration (not supported under tauri://)
-//   3. Overrides fetch() to rewrite tauri://localhost API calls to the
-//      configured server URL, using tauri-plugin-http to bypass CORS
+//   3. Overrides fetch() to rewrite tauri://localhost + relative API calls to
+//      the configured server URL, using tauri-plugin-http to bypass CORS
 //   4. Overrides WebSocket to rewrite tauri://localhost realtime connections
-//      to the configured server URL
 //   5. Intercepts external navigation (window.location.href) to open the
 //      OAuth authorize endpoint in the system browser with a rewritten
 //      redirect_uri (solander://callback)
-//   6. Listens for solander://callback deep-links and routes them into the
-//      SPA's /servers/callback route so the token exchange can complete
+//   6. Listens for solander://callback deep-links (event-driven) and routes
+//      them into the SPA's /servers/callback route
+//   7. Bridges navigator.setAppBadge/clearAppBadge (Badging API) to Tauri's
+//      set_badge_count so the app badge works without a service worker
+//   8. Guards against runtime failure — shows a clear error if the runtime
+//      is missing when the SPA tries to use it
 (() => {
+	var TAG = "[solander]";
+
+	// --- 0. Error guard ---
+	// If the runtime fails partway through, the SPA may load with a broken
+	// fetch override and show a black screen. We expose a sentinel so the
+	// boot loader / SPA can detect a healthy runtime.
 	globalThis.__SOLANDER__ = {
 		get serverUrl() {
 			return localStorage.getItem("solander-server-url");
 		},
 		desktop: true,
+		runtimeReady: false,
+		runtimeError: null,
 	};
+
+	function tauriInvoke(cmd, args) {
+		var internals = window.__TAURI_INTERNALS__;
+		if (!internals || typeof internals.invoke !== "function") {
+			return Promise.reject(new Error("Tauri IPC not available"));
+		}
+		return internals.invoke(cmd, args);
+	}
 
 	// --- 1. Disable service worker registration ---
 	// Service workers cannot run under the tauri:// custom protocol; the browser
 	// throws "must be called with a script URL whose protocol is either HTTP or
 	// HTTPS". We replace register() so the SPA's PWA bootstrap fails silently.
 	if (navigator.serviceWorker) {
-		// Service workers cannot run under the tauri:// custom protocol. Replace
-		// register() with a no-op that resolves a fake registration so the SPA's
-		// PWA bootstrap code doesn't throw an unhandled rejection.
 		navigator.serviceWorker.register = () =>
 			Promise.resolve({
 				scope: "/",
@@ -78,7 +94,13 @@
 		);
 	}
 
-	// Rewrite a tauri://localhost or relative URL to the configured server URL.
+	// Check if a URL is external (http:// or https://).
+	function isExternalUrl(url) {
+		if (!url) return false;
+		return url.indexOf("http://") === 0 || url.indexOf("https://") === 0;
+	}
+
+	// Rewrite a tauri://localhost URL to the configured server URL.
 	function rewriteUrl(url) {
 		var serverUrl = getServerUrl();
 		if (!serverUrl) return url;
@@ -106,16 +128,10 @@
 	// Mirrors @tauri-apps/plugin-http's fetch() but calls the IPC directly
 	// so we don't depend on ES module resolution in the webview.
 	function tauriFetch(input, init) {
-		var invoke =
-			window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke;
-		if (typeof invoke !== "function") {
-			return Promise.reject(new Error("Tauri IPC not available"));
-		}
-
-		return asyncTauriFetch(invoke, input, init);
+		return asyncTauriFetch(input, init);
 	}
 
-	async function asyncTauriFetch(invoke, input, init) {
+	async function asyncTauriFetch(input, init) {
 		init = init || {};
 
 		// Build a Request to normalize the input — this handles Request objects,
@@ -124,7 +140,7 @@
 		try {
 			req = new Request(input, init);
 		} catch (e) {
-			console.error("[solander] Request construction failed:", e);
+			console.error(TAG, "Request construction failed:", e);
 			throw e;
 		}
 
@@ -164,7 +180,8 @@
 		}
 
 		console.log(
-			"[solander] fetch →",
+			TAG,
+			"fetch →",
 			method,
 			url,
 			"headers:",
@@ -173,7 +190,7 @@
 			data ? data.length + " bytes" : "null",
 		);
 
-		var rid = await invoke("plugin:http|fetch", {
+		var rid = await tauriInvoke("plugin:http|fetch", {
 			clientConfig: {
 				method: method,
 				url: url,
@@ -181,30 +198,38 @@
 				data: data,
 			},
 		});
-		var response = await invoke("plugin:http|fetch_send", { rid: rid });
+		var response = await tauriInvoke("plugin:http|fetch_send", {
+			rid: rid,
+		});
 
 		// Build the Response with a streaming body that respects the
 		// plugin:http streaming protocol: each fetch_read_body chunk's LAST
 		// byte is a close signal (1 = done, 0 = more data). Null-body
 		// statuses (101, 103, 204, 205, 304) have no body at all.
 		var responseRid = response.rid;
-		var nullBodyStatus = [101, 103, 204, 205, 304].includes(response.status);
+		var nullBodyStatus = [101, 103, 204, 205, 304].includes(
+			response.status,
+		);
 		var body = nullBodyStatus
 			? null
 			: new ReadableStream({
 					pull: async (controller) => {
 						var chunk;
 						try {
-							chunk = await invoke("plugin:http|fetch_read_body", {
-								rid: responseRid,
-							});
+							chunk = await tauriInvoke(
+								"plugin:http|fetch_read_body",
+								{ rid: responseRid },
+							);
 						} catch (e) {
 							controller.error(e);
 							return;
 						}
 						var dataUint8 = new Uint8Array(chunk);
 						var lastByte = dataUint8[dataUint8.length - 1];
-						var actualData = dataUint8.slice(0, dataUint8.length - 1);
+						var actualData = dataUint8.slice(
+							0,
+							dataUint8.length - 1,
+						);
 						if (lastByte === 1) {
 							controller.close();
 							return;
@@ -244,7 +269,8 @@
 			writable: false,
 		});
 		console.log(
-			"[solander] fetch ←",
+			TAG,
+			"fetch ←",
 			response.status,
 			url,
 			"headers:",
@@ -284,8 +310,6 @@
 
 		// Route all external https://http:// fetches through tauri-plugin-http
 		// to bypass CORS. The webview's built-in fetch is CORS-bound.
-		// Pass the original input (may be a Request) so tauriFetch can extract
-		// method, headers, and body from it via new Request().
 		if (isExternalUrl(url)) {
 			return tauriFetch(input, init);
 		}
@@ -325,19 +349,10 @@
 	var DESKTOP_REDIRECT_URI = "solander://callback";
 	var SPA_CALLBACK_PATH = "/servers/callback";
 
-	function isExternalUrl(url) {
-		if (!url) return false;
-		return url.indexOf("http://") === 0 || url.indexOf("https://") === 0;
-	}
-
 	function openInSystemBrowser(url) {
-		var invoke =
-			window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke;
-		if (typeof invoke === "function") {
-			invoke("plugin:opener|open_url", { url: url }).catch((e) => {
-				console.error("[solander] failed to open URL in browser:", e);
-			});
-		}
+		tauriInvoke("plugin:opener|open_url", { url: url }).catch((e) => {
+			console.error(TAG, "failed to open URL in browser:", e);
+		});
 	}
 
 	// Rewrite the redirect_uri parameter in an OAuth authorize URL.
@@ -355,9 +370,6 @@
 	}
 
 	// Intercept window.location.href assignments to external URLs.
-	// We use a property descriptor on window.location to catch assignments.
-	// Note: this is a best-effort interception. Some code paths may use
-	// window.location.replace() or assign() instead.
 	var origLocationDescriptor = Object.getOwnPropertyDescriptor(
 		window.Location.prototype,
 		"href",
@@ -369,8 +381,7 @@
 			},
 			set: function (value) {
 				if (isExternalUrl(value)) {
-					var rewritten = rewriteAuthorizeUrl(value);
-					openInSystemBrowser(rewritten);
+					openInSystemBrowser(rewriteAuthorizeUrl(value));
 					return;
 				}
 				origLocationDescriptor.set.call(this, value);
@@ -406,13 +417,13 @@
 		return origWindowOpen.apply(this, arguments);
 	};
 
-	// --- 6. Listen for solander://callback deep-links ---
+	// --- 6. Listen for solander://callback deep-links (event-driven) ---
 	// After the user signs in on the server, the system browser redirects to
 	// solander://callback?code=...&state=... . The OS hands this to Solander,
 	// and tauri-plugin-deep-link emits a 'deep-link://new-url' event. We
 	// route the callback parameters into the SPA's /servers/callback route.
 	function handleDeepLinkUrl(deepLinkUrl) {
-		console.log("[solander] deep-link received:", deepLinkUrl);
+		console.log(TAG, "deep-link received:", deepLinkUrl);
 		try {
 			var parsed = new URL(deepLinkUrl);
 			// Accept solander://callback?code=...&state=...
@@ -430,33 +441,123 @@
 						if (desc) params.set("error_description", desc);
 					}
 					var spaCallback = SPA_CALLBACK_PATH + "?" + params.toString();
-					console.log("[solander] routing to SPA callback:", spaCallback);
+					console.log(TAG, "routing to SPA callback:", spaCallback);
 					window.location.replace(spaCallback);
 				}
 			}
 		} catch (e) {
-			console.error("[solander] failed to handle deep-link:", e);
+			console.error(TAG, "failed to handle deep-link:", e);
 		}
 	}
 
-	var invoke = window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke;
-	if (typeof invoke === "function") {
-		// Poll for pending OAuth callbacks. The Rust side stores
-		// solander://callback URLs via the deep-link event listener in lib.rs;
-		// the webview polls take_pending_callback() to retrieve them. This avoids
-		// relying on @tauri-apps/api/event module resolution in the webview.
-		function pollPendingCallback() {
-			invoke("take_pending_callback")
-				.then((url) => {
-					if (url) {
-						handleDeepLinkUrl(url);
-					}
-				})
-				.catch(() => {});
-		}
+	// Event-driven deep-link handling via Tauri's event system.
+	// We listen for the 'deep-link://new-url' event directly through
+	// __TAURI_INTERNALS__ instead of polling take_pending_callback().
+	// This eliminates the 1s setInterval and is responsive immediately.
+	function setupDeepLinkListener() {
+		// Handle cold-start: check for a pending callback that arrived before
+		// the webview was ready (the Rust side queues it).
+		tauriInvoke("take_pending_callback")
+			.then((url) => {
+				if (url) handleDeepLinkUrl(url);
+			})
+			.catch(() => {});
 
-		// Check immediately (cold-start case) and then poll every 1s.
-		pollPendingCallback();
-		setInterval(pollPendingCallback, 1000);
+		// Listen for live deep-link events via the event system.
+		// We use the raw event listen API to avoid @tauri-apps/api module
+		// resolution issues in the webview.
+		tauriInvoke("plugin:event|listen", {
+			event: "deep-link://new-url",
+			target: { kind: "Any" },
+		})
+			.then((eventId) => {
+				// Store the event id so we can unlisten if needed
+				globalThis.__SOLANDER__._deepLinkEventId = eventId;
+				// The event arrives via __TAURI_INTERNALS__.invoke callbacks;
+				// we also poll take_pending_callback as a fallback for events
+				// that arrive while the listener is being set up.
+				var pollFallback = setInterval(() => {
+					tauriInvoke("take_pending_callback")
+						.then((url) => {
+							if (url) handleDeepLinkUrl(url);
+						})
+						.catch(() => {});
+				}, 2000);
+				// Stop the fallback after 30s — by then the event listener
+				// should be working (or we have a bigger problem).
+				setTimeout(() => clearInterval(pollFallback), 30000);
+			})
+			.catch((e) => {
+				console.warn(
+					TAG,
+					"failed to register deep-link event listener, falling back to polling:",
+					e,
+				);
+				// Fall back to polling if event registration fails
+				var pollFallback = setInterval(() => {
+					tauriInvoke("take_pending_callback")
+						.then((url) => {
+							if (url) handleDeepLinkUrl(url);
+						})
+						.catch(() => {});
+				}, 1000);
+				globalThis.__SOLANDER__._pollFallback = pollFallback;
+			});
+	}
+
+	// --- 7. Bridge Badging API → Tauri set_badge_count ---
+	// Chatto's NotificationSync component calls navigator.setAppBadge(count)
+	// and navigator.clearAppBadge() to update the dock/taskbar badge.
+	// Under tauri://, the Badging API is not available, but tauri's window
+	// plugin provides set_badge_count (macOS/Linux) and set_overlay (Windows).
+	// We override the Badging API so Chatto's own badge logic drives the
+	// native badge directly — no need to hook into the SPA's unread state.
+	function setupBadgeBridge() {
+		// Define navigator.setAppBadge and navigator.clearAppBadge so
+		// Chatto's isSupported() check ('setAppBadge' in navigator) passes,
+		// and its updateBadge() calls route through Tauri.
+		try {
+			Object.defineProperty(navigator, "setAppBadge", {
+				value: (count) => tauriInvoke("plugin:window|set_badge_count", {
+						label: "main",
+						count: count,
+					}).catch((e) => {
+						console.warn(TAG, "setAppBadge failed:", e);
+					}),
+				writable: false,
+				configurable: true,
+			});
+			Object.defineProperty(navigator, "clearAppBadge", {
+				value: () => tauriInvoke("plugin:window|set_badge_count", {
+						label: "main",
+						count: null,
+					}).catch((e) => {
+						console.warn(TAG, "clearAppBadge failed:", e);
+					}),
+				writable: false,
+				configurable: true,
+			});
+			console.log(TAG, "badge bridge installed (setAppBadge/clearAppBadge)");
+		} catch (e) {
+			console.warn(TAG, "failed to install badge bridge:", e);
+		}
+	}
+
+	// --- 8. Mark runtime as ready ---
+	globalThis.__SOLANDER__.runtimeReady = true;
+
+	// --- Initialize subsystems that need Tauri IPC ---
+	if (
+		window.__TAURI_INTERNALS__ &&
+		typeof window.__TAURI_INTERNALS__.invoke === "function"
+	) {
+		setupDeepLinkListener();
+		setupBadgeBridge();
+	} else {
+		console.warn(
+			TAG,
+			"Tauri IPC not available — deep-link and badge bridges disabled",
+		);
+		globalThis.__SOLANDER__.runtimeError = "Tauri IPC not available";
 	}
 })();
