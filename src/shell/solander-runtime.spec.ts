@@ -20,10 +20,20 @@ const RUNTIME_SOURCE = readFileSync(RUNTIME_PATH, "utf-8");
  * Build a fresh mock webview environment and evaluate the runtime in it.
  * Returns an object with the mocked globals so tests can assert behavior.
  */
-function createRuntimeEnv(): { env: any; invoke: any; localStorage: any; origFetch: any; origWebSocket: any } {
+function createRuntimeEnv(): {
+	env: any;
+	invoke: any;
+	localStorage: any;
+	origFetch: any;
+	origWebSocket: any;
+} {
 	const invoke = vi.fn();
 	const localStorage = new Map<string, string>();
-	const origFetch = vi.fn().mockResolvedValue(new (globalThis.Response as any)(new Uint8Array([72, 105])));
+	const origFetch = vi
+		.fn()
+		.mockResolvedValue(
+			new (globalThis.Response as any)(new Uint8Array([72, 105])),
+		);
 	const origWebSocket = vi.fn(function (this: any, url: string) {
 		this.url = url;
 		this.readyState = 0;

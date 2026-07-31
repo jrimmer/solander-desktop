@@ -72,7 +72,10 @@ interface TauriHttpResponse {
 		runtimeError: null,
 	};
 
-	function tauriInvoke(cmd: string, args?: Record<string, unknown>): Promise<unknown> {
+	function tauriInvoke(
+		cmd: string,
+		args?: Record<string, unknown>,
+	): Promise<unknown> {
 		var internals = window.__TAURI_INTERNALS__;
 		if (!internals || typeof internals.invoke !== "function") {
 			return Promise.reject(new Error("Tauri IPC not available"));
@@ -249,29 +252,23 @@ interface TauriHttpResponse {
 		// byte is a close signal (1 = done, 0 = more data). Null-body
 		// statuses (101, 103, 204, 205, 304) have no body at all.
 		var responseRid = response.rid;
-		var nullBodyStatus = [101, 103, 204, 205, 304].includes(
-			response.status,
-		);
+		var nullBodyStatus = [101, 103, 204, 205, 304].includes(response.status);
 		const responseBody: BodyInit | null = nullBodyStatus
 			? null
 			: new ReadableStream({
 					pull: async (controller) => {
 						var chunk: unknown;
 						try {
-							chunk = await tauriInvoke(
-								"plugin:http|fetch_read_body",
-								{ rid: responseRid },
-							);
+							chunk = await tauriInvoke("plugin:http|fetch_read_body", {
+								rid: responseRid,
+							});
 						} catch (e) {
 							controller.error(e);
 							return;
 						}
 						var dataUint8 = new Uint8Array(chunk as unknown as ArrayBuffer);
 						var lastByte = dataUint8[dataUint8.length - 1];
-						var actualData = dataUint8.slice(
-							0,
-							dataUint8.length - 1,
-						);
+						var actualData = dataUint8.slice(0, dataUint8.length - 1);
 						if (lastByte === 1) {
 							controller.close();
 							return;
@@ -418,12 +415,8 @@ interface TauriHttpResponse {
 		"href",
 	);
 	if (origLocationDescriptor && origLocationDescriptor.set) {
-		const origGet = origLocationDescriptor.get?.bind(
-			window.Location.prototype,
-		);
-		const origSet = origLocationDescriptor.set?.bind(
-			window.Location.prototype,
-		);
+		const origGet = origLocationDescriptor.get?.bind(window.Location.prototype);
+		const origSet = origLocationDescriptor.set?.bind(window.Location.prototype);
 		Object.defineProperty(window.Location.prototype, "href", {
 			get: function () {
 				return origGet?.call(this);
@@ -461,7 +454,7 @@ interface TauriHttpResponse {
 	// Also intercept window.open() (used by some OAuth flows)
 	var origWindowOpen = window.open;
 	window.open = function (url?: string | URL) {
-		const urlStr = typeof url === "string" ? url : url?.toString() ?? "";
+		const urlStr = typeof url === "string" ? url : (url?.toString() ?? "");
 		if (isExternalUrl(urlStr)) {
 			openInSystemBrowser(rewriteAuthorizeUrl(urlStr));
 			return null;
@@ -570,7 +563,8 @@ interface TauriHttpResponse {
 		// and its updateBadge() calls route through Tauri.
 		try {
 			Object.defineProperty(navigator, "setAppBadge", {
-				value: (count?: number) => tauriInvoke("plugin:window|set_badge_count", {
+				value: (count?: number) =>
+					tauriInvoke("plugin:window|set_badge_count", {
 						label: "main",
 						count: count,
 					}).catch((e) => {
@@ -580,7 +574,8 @@ interface TauriHttpResponse {
 				configurable: true,
 			});
 			Object.defineProperty(navigator, "clearAppBadge", {
-				value: () => tauriInvoke("plugin:window|set_badge_count", {
+				value: () =>
+					tauriInvoke("plugin:window|set_badge_count", {
 						label: "main",
 						count: null,
 					}).catch((e) => {

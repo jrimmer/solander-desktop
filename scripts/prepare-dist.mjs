@@ -84,11 +84,38 @@ if (hasVendor) {
 		"utf-8",
 	);
 	const bootGuard = `<script>
-// Boot guard: redirect to server picker if no server is configured.
-(function () {
+// Boot guard: check Rust config (source of truth) for server URL.
+// If no server is configured, redirect to server picker.
+// Runs before the SPA's deferred module scripts.
+(async function () {
+  // Fast path: if localStorage has no URL, redirect immediately
   var stored = localStorage.getItem('solander-server-url');
   if (!stored) {
     window.location.replace('server-picker.html');
+    return;
+  }
+  // Verify against Rust config (source of truth) — handles the case
+  // where localStorage has a stale URL from a previous session but
+  // the Rust config was cleared (e.g. user reset app data).
+  var invoke = window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke;
+  if (typeof invoke === 'function') {
+    try {
+      var configUrl = await Promise.race([
+        invoke('get_server_url'),
+        new Promise(function (_, reject) {
+          setTimeout(function () { reject(new Error('IPC timeout')); }, 3000);
+        })
+      ]);
+      if (!configUrl) {
+        localStorage.removeItem('solander-server-url');
+        window.location.replace('server-picker.html');
+        return;
+      }
+      // Sync Rust config to localStorage in case it changed
+      localStorage.setItem('solander-server-url', configUrl);
+    } catch (e) {
+      // IPC failed (dev mode?) — trust localStorage
+    }
   }
 })();
 </script>`;
