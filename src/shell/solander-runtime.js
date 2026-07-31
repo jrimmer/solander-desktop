@@ -93,7 +93,7 @@
 	// --- 2. tauri-plugin-http fetch (bypasses CORS by running in Rust) ---
 	// Mirrors @tauri-apps/plugin-http's fetch() but calls the IPC directly
 	// so we don't depend on ES module resolution in the webview.
-	function tauriFetch(url, init) {
+	function tauriFetch(input, init) {
 		var invoke =
 			window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke;
 		if (typeof invoke !== "function") {
@@ -101,28 +101,30 @@
 		}
 
 		init = init || {};
-		var method = init.method || "GET";
 
-		// Convert headers to the array-of-[name, value] format expected by plugin:http
-		var headersObj = init.headers || {};
-		var headersArr = [];
-		if (typeof Headers !== "undefined" && headersObj instanceof Headers) {
-			headersObj.forEach((v, k) => {
-				headersArr.push([k, v]);
-			});
-		} else if (Array.isArray(headersObj)) {
-			headersArr = headersObj;
-		} else {
-			for (var k in headersObj) {
-				if (Object.hasOwn(headersObj, k)) {
-					headersArr.push([k, headersObj[k]]);
-				}
-			}
+		// Build a Request to normalize the input — this handles Request objects,
+		// URL objects, and plain strings, and merges init properties.
+		// The plugin's own implementation does the same.
+		var req;
+		try {
+			req = new Request(input, init);
+		} catch (e) {
+			return Promise.reject(e);
 		}
+
+		var method = req.method;
+		var url = req.url;
+
+		// Extract headers from the Request (includes init.headers merged in)
+		var headersArr = [];
+		req.headers.forEach((v, k) => {
+			headersArr.push([k, v]);
+		});
 
 		// Convert body to array of bytes (plugin:http expects Array<number> or null)
 		var data = null;
 		if (init.body != null) {
+			// Use init.body if provided (Request may have a stream that can't be read twice)
 			var body = init.body;
 			if (typeof body === "string") {
 				data = Array.from(new TextEncoder().encode(body));
@@ -132,6 +134,16 @@
 				data = Array.from(new Uint8Array(body.buffer));
 			} else if (typeof body === "object") {
 				data = Array.from(new TextEncoder().encode(JSON.stringify(body)));
+			}
+		} else {
+			// Try reading from the Request body
+			try {
+				var buffer = req.arrayBuffer();
+				if (buffer && buffer.byteLength > 0) {
+					data = Array.from(new Uint8Array(buffer));
+				}
+			} catch (e) {
+				// Body may be a stream that's already consumed
 			}
 		}
 
@@ -192,8 +204,10 @@
 
 		// Route all external https://http:// fetches through tauri-plugin-http
 		// to bypass CORS. The webview's built-in fetch is CORS-bound.
+		// Pass the original input (may be a Request) so tauriFetch can extract
+		// method, headers, and body from it via new Request().
 		if (isExternalUrl(url)) {
-			return tauriFetch(url, init);
+			return tauriFetch(input, init);
 		}
 
 		return origFetch(input, init);
@@ -233,10 +247,7 @@
 
 	function isExternalUrl(url) {
 		if (!url) return false;
-		return (
-			url.indexOf("http://") === 0 ||
-			url.indexOf("https://") === 0
-		);
+		return url.indexOf("http://") === 0 || url.indexOf("https://") === 0;
 	}
 
 	function openInSystemBrowser(url) {
