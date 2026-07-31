@@ -1,0 +1,148 @@
+{
+  "runId": "db87c4f9",
+  "agent": "ce-correctness-reviewer",
+  "task": "Review the Solander Tauri v2 desktop wrapper codebase at /Users/jrimmer/work/chatto-desktop for logic errors, edge cases, state management bugs, error propagation failures, and intent-vs-implementation mismatches. Focus on: src-tauri/src/lib.rs (plugin registration, config store, Tauri commands), src-tauri/src/server_config.rs (persistence), src/shell/boot.ts (injection seam), src/shell/oauthClient.ts (OAuth flow), src/shell/notifyBridge.ts (notification bridge), src/shell/connectionStatus.ts (connection monitor), src/shell/server-picker.html (URL validation), scripts/prepare-dist.mjs (build assembly), scripts/fetch-frontend.mjs (upstream fetch).",
+  "exitCode": 0,
+  "usage": {
+    "input": 556575,
+    "output": 17302,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "cost": 0,
+    "turns": 18
+  },
+  "model": "ollama-cloud/deepseek-v4-flash",
+  "attemptedModels": [
+    "ollama-cloud/deepseek-v4-flash"
+  ],
+  "modelAttempts": [
+    {
+      "model": "ollama-cloud/deepseek-v4-flash",
+      "success": true,
+      "exitCode": 0,
+      "usage": {
+        "input": 556575,
+        "output": 17302,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "cost": 0,
+        "turns": 18
+      }
+    }
+  ],
+  "durationMs": 129580,
+  "toolCount": 57,
+  "launchContractDigest": "7ecaff2413e5972469f6e78258de16bf48c52a8a80ee3f4ccad5cbcef3222849",
+  "acceptance": {
+    "status": "attested",
+    "evidenceStatus": "attested",
+    "explicit": false,
+    "effectiveAcceptance": {
+      "level": "attested",
+      "explicit": false,
+      "inferredReason": [
+        "read-only/reviewer-style agent"
+      ],
+      "criteria": [
+        {
+          "id": "criterion-1",
+          "must": "Return concrete findings with file paths and severity when applicable",
+          "evidence": [
+            "review-findings",
+            "residual-risks"
+          ],
+          "severity": "required"
+        }
+      ],
+      "evidence": [
+        "review-findings",
+        "residual-risks"
+      ],
+      "verify": [],
+      "stopRules": []
+    },
+    "inferredReason": [
+      "read-only/reviewer-style agent"
+    ],
+    "criteria": [
+      {
+        "id": "criterion-1",
+        "must": "Return concrete findings with file paths and severity when applicable",
+        "evidence": [
+          "review-findings",
+          "residual-risks"
+        ],
+        "severity": "required"
+      }
+    ],
+    "runtimeChecks": [],
+    "verifyRuns": [],
+    "childReport": {
+      "criteriaSatisfied": [
+        {
+          "id": "criterion-1",
+          "status": "satisfied",
+          "evidence": "Returned 12 concrete findings across 8 files with file paths, line numbers, severity ratings, and confidence calibration. See reviewFindings below."
+        }
+      ],
+      "changedFiles": [],
+      "testsAddedOrUpdated": [],
+      "commandsRun": [
+        {
+          "command": "grep -c plugin-http pnpm-lock.yaml",
+          "result": "passed",
+          "summary": "Confirmed @tauri-apps/plugin-http npm package is not installed (0 occurrences in lockfile)"
+        },
+        {
+          "command": "ls node_modules/@tauri-apps/",
+          "result": "passed",
+          "summary": "Confirmed plugin-http is absent from node_modules; only api, cli, plugin-deep-link, plugin-notification, plugin-opener present"
+        },
+        {
+          "command": "grep -n 'fetch\\|plugin-http' src/shell/server-picker.html",
+          "result": "passed",
+          "summary": "Confirmed server-picker.html line 193 comments about using tauri-plugin-http but line 198 uses standard fetch"
+        }
+      ],
+      "validationOutput": [
+        "All 8 target files read and analyzed",
+        "5 test files reviewed for coverage gaps",
+        "Cargo.toml and tauri.conf.json checked for plugin registration and CSP",
+        "package.json and pnpm-lock.yaml checked for npm dependency completeness"
+      ],
+      "residualRisks": [
+        "H1: loopback OAuth flow (start_oauth_server / poll_oauth_callback) has zero backend implementation — the entire strategy is dead code until the Rust commands are written and registered",
+        "H2: All cross-origin HTTP requests (server-picker probe, OAuth token exchange) use standard fetch instead of tauri-plugin-http's fetch — will fail on servers without CORS headers; @tauri-apps/plugin-http npm package is not even installed",
+        "M1+M2: ConfigStore silently drops writes on any I/O or serialization error, and non-atomic writes risk corruption on crash — user's server URL can be silently lost",
+        "M3: Notifications fire even when the window is focused, causing duplicate in-app + OS notifications despite documented intent to suppress them",
+        "M4: Boot loader and getServerConfig() have opposite error-recovery strategies for IPC failure — one shows server-picker, the other goes to SPA"
+      ],
+      "reviewFindings": [
+        "blocker: src/shell/oauthClient.ts:140,155 — loopback OAuth flow calls invoke('start_oauth_server') and invoke('poll_oauth_callback') but neither command is registered in src-tauri/src/lib.rs. Only get_server_url, set_server_url, clear_server_url exist. The entire loopback strategy is non-functional.",
+        "blocker: src/shell/server-picker.html:198 + src/shell/oauthClient.ts:213 — standard fetch() used instead of import { fetch } from '@tauri-apps/plugin-http'. Comments claim tauri-plugin-http bypasses CORS but code doesn't use it. @tauri-apps/plugin-http npm package is not installed (absent from package.json and pnpm-lock.yaml). Cross-origin requests subject to browser CORS.",
+        "medium: src-tauri/src/server_config.rs:52-56 — save() silently swallows serialization errors (if let Ok) and write errors (let _ = std::fs::write). Tauri commands return () with no error propagation. Data loss on write failure.",
+        "medium: src-tauri/src/server_config.rs:55 — Non-atomic write via std::fs::write. Partial/corrupt file on crash causes data loss (unwrap_or_default() returns default config on next read).",
+        "medium: src/shell/notifyBridge.ts:68-79 — notify() doc comment says 'Only fires when the window is not focused' but implementation never checks window focus. Sends OS notifications regardless of focus state.",
+        "medium: src/shell/boot.ts:30-35 vs scripts/prepare-dist.mjs boot loader — getServerConfig() returns null on IPC error (shows server-picker), but boot loader goes to SPA on IPC error. Opposite error-recovery strategies for same failure.",
+        "low: src-tauri/src/lib.rs:12 — set_server_url accepts any string with no server-side URL validation.",
+        "low: src-tauri/src/lib.rs:33 — app.path().app_data_dir().expect() panics on path resolution failure.",
+        "low: src-tauri/src/server_config.rs:33,37,42 — All Mutex accesses use .unwrap(); poisoned-mutex panic if any thread panics while holding lock.",
+        "low: src/shell/oauthClient.ts:88-97 — deepLinkFlow uses unlisten.then(fn => fn()) inside callback; fragile async pattern if onOpenUrl promise hasn't resolved when callback fires.",
+        "low: src/shell/connectionStatus.ts:52 — lastActiveAt initialized at construction but never updated on updateState(); false wake detection on first minimize after long session.",
+        "low: src/shell/connectionStatus.ts:43 — WAKE_THRESHOLD_MS=30000 is too short; legitimate tab switches trigger false wake-from-sleep events.",
+        "low: src/shell/notifyBridge.ts:93 — win.setBadgeCount() called with no argument to clear badge; platform-dependent behavior in Tauri v2.",
+        "low: scripts/fetch-frontend.mjs:30-35 — runOrExit catches execSync error but only logs command string, not error message or exit code."
+      ],
+      "manualNotes": "Two HIGH-severity blockers found: (1) loopback OAuth backend commands are entirely missing from lib.rs, making that strategy dead code. (2) All cross-origin HTTP uses standard fetch instead of tauri-plugin-http's fetch, and the required npm package isn't installed. These are intent-vs-implementation mismatches where comments describe one approach but code implements another. The ConfigStore's silent write failure (M1) is the most impactful data-loss risk in production use."
+    }
+  },
+  "effects": {
+    "fileMutation": {
+      "status": "not-applicable",
+      "expected": false,
+      "attempted": true
+    }
+  },
+  "transcriptPath": "/Users/jrimmer/work/chatto-desktop/.pi-subagents/artifacts/db87c4f9_ce-correctness-reviewer_0_transcript.jsonl",
+  "timestamp": 1785450803914
+}

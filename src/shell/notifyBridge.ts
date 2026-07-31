@@ -11,39 +11,43 @@
  * 4. Handling notification clicks to focus the app and navigate to the room
  */
 
-import { isPermissionGranted, requestPermission, sendNotification } from '@tauri-apps/plugin-notification';
-import { getCurrentWindow } from '@tauri-apps/api/window';
+import {
+	isPermissionGranted,
+	requestPermission,
+	sendNotification,
+} from "@tauri-apps/plugin-notification";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 export type NotificationPayload = {
-  title: string;
-  body: string;
-  serverId?: string;
-  roomId?: string;
-  messageId?: string;
+	title: string;
+	body: string;
+	serverId?: string;
+	roomId?: string;
+	messageId?: string;
 };
 
 /**
  * Check if running inside a Tauri webview.
  */
 function isTauri(): boolean {
-  return typeof globalThis !== 'undefined' && '__TAURI__' in globalThis;
+	return typeof globalThis !== "undefined" && "__TAURI__" in globalThis;
 }
 
 /**
  * Request notification permission. Returns true if granted.
  */
 export async function ensureNotificationPermission(): Promise<boolean> {
-  if (!isTauri()) return false;
+	if (!isTauri()) return false;
 
-  try {
-    const granted = await isPermissionGranted();
-    if (granted) return true;
+	try {
+		const granted = await isPermissionGranted();
+		if (granted) return true;
 
-    const permission = await requestPermission();
-    return permission === 'granted';
-  } catch {
-    return false;
-  }
+		const permission = await requestPermission();
+		return permission === "granted";
+	} catch {
+		return false;
+	}
 }
 
 /**
@@ -51,19 +55,19 @@ export async function ensureNotificationPermission(): Promise<boolean> {
  * Only fires when the window is not focused (no duplicate in-app notification).
  */
 export async function notify(payload: NotificationPayload): Promise<void> {
-  if (!isTauri()) return;
+	if (!isTauri()) return;
 
-  try {
-    const permitted = await ensureNotificationPermission();
-    if (!permitted) return;
+	try {
+		const permitted = await ensureNotificationPermission();
+		if (!permitted) return;
 
-    sendNotification({
-      title: payload.title,
-      body: payload.body,
-    });
-  } catch (err) {
-    console.error('[notifyBridge] Failed to send notification:', err);
-  }
+		sendNotification({
+			title: payload.title,
+			body: payload.body,
+		});
+	} catch (err) {
+		console.error("[notifyBridge] Failed to send notification:", err);
+	}
 }
 
 /**
@@ -72,18 +76,18 @@ export async function notify(payload: NotificationPayload): Promise<void> {
  * Windows: overlay icon (no numeric badge support)
  */
 export async function updateBadge(count: number): Promise<void> {
-  if (!isTauri()) return;
+	if (!isTauri()) return;
 
-  try {
-    const win = getCurrentWindow();
-    if (count > 0) {
-      await win.setBadgeCount(count);
-    } else {
-      await win.setBadgeCount(); // undefined clears the badge
-    }
-  } catch (err) {
-    console.error('[notifyBridge] Failed to update badge:', err);
-  }
+	try {
+		const win = getCurrentWindow();
+		if (count > 0) {
+			await win.setBadgeCount(count);
+		} else {
+			await win.setBadgeCount(); // undefined clears the badge
+		}
+	} catch (err) {
+		console.error("[notifyBridge] Failed to update badge:", err);
+	}
 }
 
 /**
@@ -93,27 +97,27 @@ export async function updateBadge(count: number): Promise<void> {
  * The frontend should listen for this event and route accordingly.
  */
 export function handleNotificationClick(payload: NotificationPayload): void {
-  if (!isTauri()) return;
+	if (!isTauri()) return;
 
-  // Focus the window
-  try {
-    const win = getCurrentWindow();
-    win.setFocus();
-    win.show();
-  } catch (err) {
-    console.error('[notifyBridge] Failed to focus window:', err);
-  }
+	// Focus the window
+	try {
+		const win = getCurrentWindow();
+		win.setFocus();
+		win.show();
+	} catch (err) {
+		console.error("[notifyBridge] Failed to focus window:", err);
+	}
 
-  // Dispatch a custom event that the frontend can listen for
-  if (payload.roomId) {
-    window.dispatchEvent(
-      new CustomEvent('solander:navigate', {
-        detail: {
-          serverId: payload.serverId,
-          roomId: payload.roomId,
-          messageId: payload.messageId,
-        },
-      }),
-    );
-  }
+	// Dispatch a custom event that the frontend can listen for
+	if (payload.roomId) {
+		window.dispatchEvent(
+			new CustomEvent("solander:navigate", {
+				detail: {
+					serverId: payload.serverId,
+					roomId: payload.roomId,
+					messageId: payload.messageId,
+				},
+			}),
+		);
+	}
 }

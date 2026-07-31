@@ -4,14 +4,13 @@
   "version": "0.1.0",
   "identifier": "com.solander.app",
   "build": {
-    "devUrl": "http://localhost:5173",
     "frontendDist": "../dist",
     "beforeDevCommand": "pnpm prepare-dist",
     "beforeBuildCommand": "pnpm fetch-frontend && pnpm prepare-dist"
   },
   "app": {
     "security": {
-      "csp": "default-src 'self' tauri: asset:; connect-src ipc: http://ipc.localhost https: wss:; img-src 'self' asset: http://asset.localhost blob: data:; style-src 'unsafe-inline' 'self'; media-src 'self' blob: mediastream:; font-src 'self' data:"
+      "csp": "default-src 'self' tauri: asset:; connect-src ipc: http://ipc.localhost https: wss:; img-src 'self' asset: http://asset.localhost https: blob: data:; style-src 'unsafe-inline' 'self'; media-src 'self' blob: mediastream:; font-src 'self' data:"
     },
     "windows": [
       {

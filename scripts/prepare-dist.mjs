@@ -73,41 +73,27 @@ if (hasVendor) {
 	// --- Step 5: Inject __SOLANDER__ + boot loader into index.html ---
 	let spaHtml = readFileSync(distIndex, "utf-8");
 
-	// The injection script does two things:
-	// 1. Sets up __SOLANDER__ global with the server URL from localStorage
-	// 2. Checks if a server URL is configured; if not, redirects to server-picker.html
-	// This runs BEFORE the SPA's own scripts, so it can intercept the load.
-	const injectionScript = `<script>
-// Solander desktop runtime — injected by prepare-dist.mjs
-(function() {
-  globalThis.__SOLANDER__ = {
-    get serverUrl() { return localStorage.getItem('solander-server-url'); },
-    desktop: true
-  };
-
-  // Boot loader: check if a server URL is configured
-  var invoke = window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke;
-  if (typeof invoke === 'function') {
-    // Synchronously redirect to server-picker if no URL in localStorage
-    var storedUrl = localStorage.getItem('solander-server-url');
-    if (!storedUrl) {
-      // Check IPC for a persisted URL (may have been set by a previous session)
-      invoke('get_server_url').then(function(url) {
-        if (url) {
-          localStorage.setItem('solander-server-url', url);
-        } else {
-          window.location.replace('server-picker.html');
-        }
-      }).catch(function() {
-        window.location.replace('server-picker.html');
-      });
-    }
-  } else {
-    // Not in Tauri — let the SPA load normally
+	// The runtime is kept in a separate .js file to avoid template-literal
+	// escaping issues. It sets up __SOLANDER__, disables service workers,
+	// and overrides fetch/WebSocket to rewrite tauri://localhost to the
+	// configured server URL. A small boot-loader guard is prepended so
+	// first-run users are redirected to the server picker before the SPA's
+	// own scripts run.
+	const runtimeJs = readFileSync(resolve(SHELL, "solander-runtime.js"), "utf-8");
+	const bootGuard = `<script>
+// Boot guard: redirect to server picker if no server is configured.
+(function () {
+  var stored = localStorage.getItem('solander-server-url');
+  if (!stored) {
+    window.location.replace('server-picker.html');
   }
 })();
-</script>
-`;
+</script>`;
+	const injectionScript =
+		bootGuard +
+		'\n<script>\n' +
+		runtimeJs +
+		'\n</script>\n';
 
 	const firstScript = spaHtml.indexOf("<script");
 	if (firstScript !== -1) {
@@ -116,7 +102,9 @@ if (hasVendor) {
 			injectionScript +
 			spaHtml.slice(firstScript);
 		writeFileSync(distIndex, spaHtml, "utf-8");
-		console.log("[prepare-dist] Injected __SOLANDER__ + boot loader into index.html.");
+		console.log(
+			"[prepare-dist] Injected __SOLANDER__ + runtime into index.html.",
+		);
 	} else {
 		console.warn(
 			"[prepare-dist] No <script> tag in index.html — injection skipped.",

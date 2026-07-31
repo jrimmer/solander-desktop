@@ -1,0 +1,139 @@
+{
+  "runId": "f6356689",
+  "agent": "ce-best-practices-researcher",
+  "task": "Research current (2025-2026) best practices for wrapping an existing SvelteKit static SPA (adapter-static, fallback 200.html, output in apps/frontend/build) in Tauri v2 as a desktop app. The wrapper is a SEPARATE repo that consumes the pinned upstream frontend build — it does not embed its own Vite app. Focus on: (1) tauri.conf.json v2 shape: build.frontendDist pointing at the SvelteKit build output dir, build.devUrl at the Vite dev server, and how beforeBuildCommand drives the upstream pnpm build; (2) OAuth sign-in from a Tauri v2 webview via system browser + deep-link/loopback redirect — recommended plugins (tauri-plugin-deep-link, tauri-plugin-opener, single-instance) and pitfalls under the tauri:// custom scheme; (3) OS notification + app-badge patterns in Tauri v2 (tauri-plugin-notification) and how they interact with an existing web Notification/service-worker flow inside the webview; (4) connecting to a user-configurable remote backend URL from the webview — CORS, whether a localhost Rust proxy is needed, and how tauri CSP connect-src must be set for a dynamic server URL; (5) cross-platform CI build for macOS/Windows/Linux via tauri-action, and what breaks on Linux WebKitGTK; (6) Tauri v2 readiness for FUTURE WebRTC/LiveKit voice+screenshare (getDisplayMedia, mic/camera permissions, entitlements) so we leave the right seams without building it. Return concrete, version-specific guidance with config snippets and plugin names.",
+  "exitCode": 0,
+  "usage": {
+    "input": 54930,
+    "output": 10527,
+    "cacheRead": 506624,
+    "cacheWrite": 0,
+    "cost": 0,
+    "turns": 18
+  },
+  "model": "commandcode/moonshotai/Kimi-K3",
+  "attemptedModels": [
+    "commandcode/moonshotai/Kimi-K3"
+  ],
+  "modelAttempts": [
+    {
+      "model": "commandcode/moonshotai/Kimi-K3",
+      "success": true,
+      "exitCode": 0,
+      "usage": {
+        "input": 54930,
+        "output": 10527,
+        "cacheRead": 506624,
+        "cacheWrite": 0,
+        "cost": 0,
+        "turns": 18
+      }
+    }
+  ],
+  "durationMs": 386643,
+  "toolCount": 32,
+  "launchContractDigest": "606b613f11c52ee9100b27127e5a07adeb3eef007b6571caa2713c46ff26f5b9",
+  "acceptance": {
+    "status": "attested",
+    "evidenceStatus": "attested",
+    "explicit": false,
+    "effectiveAcceptance": {
+      "level": "attested",
+      "explicit": false,
+      "inferredReason": [
+        "read-only/reviewer-style agent"
+      ],
+      "criteria": [
+        {
+          "id": "criterion-1",
+          "must": "Return concrete findings with file paths and severity when applicable",
+          "evidence": [
+            "review-findings",
+            "residual-risks"
+          ],
+          "severity": "required"
+        }
+      ],
+      "evidence": [
+        "review-findings",
+        "residual-risks"
+      ],
+      "verify": [],
+      "stopRules": []
+    },
+    "inferredReason": [
+      "read-only/reviewer-style agent"
+    ],
+    "criteria": [
+      {
+        "id": "criterion-1",
+        "must": "Return concrete findings with file paths and severity when applicable",
+        "evidence": [
+          "review-findings",
+          "residual-risks"
+        ],
+        "severity": "required"
+      }
+    ],
+    "runtimeChecks": [],
+    "verifyRuns": [],
+    "childReport": {
+      "criteriaSatisfied": [
+        {
+          "id": "criterion-1",
+          "status": "satisfied",
+          "evidence": "Concrete findings returned for all six focus areas with specific file paths (src-tauri/tauri.conf.json, src-tauri/Cargo.toml, src-tauri/src/lib.rs, scripts/prepare-dist.mjs, src-tauri/Info.plist, src-tauri/Release.entitlements), exact plugin names (tauri-plugin-deep-link, tauri-plugin-single-instance, tauri-plugin-opener, tauri-plugin-notification, tauri-plugin-http, @fabianlars/tauri-plugin-oauth), version pins (tauri 2.2.0 / @tauri-apps/api 2.2.0 for badging, tauri-action@v1, SvelteKit 2.20.4 guidance), config snippets (frontendDist, CSP connect-src, deep-link schemes, capability permissions), CI matrix YAML, and severity-tagged residual risks R1-R5 citing upstream issues (tauri#2600 #8346 #10878 #13287, wry#85 #1195, plugins-workspace#2150)."
+        }
+      ],
+      "changedFiles": [],
+      "testsAddedOrUpdated": [],
+      "commandsRun": [
+        {
+          "command": "ls ~/.claude/skills ~/.codex/skills ~/.agents/skills and find **/SKILL.md (skill discovery)",
+          "result": "passed",
+          "summary": "No Tauri/Svelte skills available; proceeded to online research"
+        },
+        {
+          "command": "command -v ctx7; mcp server status",
+          "result": "passed",
+          "summary": "No ctx7 CLI and no MCP servers; used web_search + fetch_content"
+        },
+        {
+          "command": "web_search (multi-query) + fetch_content v2.tauri.app docs (sveltekit, csp, http-client, deep-linking, notification, opener, single-instance, localhost, pipelines/github) and svelte.dev single-page-apps",
+          "result": "passed",
+          "summary": "Gathered official config shapes, plugin permissions, CI template, SPA fallback semantics"
+        },
+        {
+          "command": "web_search GitHub issues/PRs (tauri #2600 #8346 #10878 #13287, wry #85 #1195, PR #11661, FabianLars/tauri-plugin-oauth)",
+          "result": "passed",
+          "summary": "Confirmed WebRTC/WebKitGTK gaps, badging API versions, loopback OAuth option"
+        }
+      ],
+      "validationOutput": [
+        "Research-only task: no code built or executed; findings cross-referenced against official Tauri v2 docs, SvelteKit docs, and upstream GitHub issues/PRs. Exa provider hit rate limits mid-run; remaining queries completed via default provider and direct fetch_content of v2.tauri.app and svelte.dev pages."
+      ],
+      "residualRisks": [
+        "R1 high: upstream fallback '200.html' yields no index.html entry for Tauri; requires the prepare-dist rename seam",
+        "R2 high: WebKitGTK on Linux has no WebRTC/getUserMedia (wry#85); LiveKit voice/screenshare cannot ship on Linux via the webview",
+        "R3 medium: CSP connect-src 'https: wss:' and broad http plugin scope are deliberate relaxations for a user-configurable backend",
+        "R4 medium: existing service-worker/web Notification flow silently no-ops in the Tauri webview and must be bridged to tauri-plugin-notification",
+        "R5 low: OAuth deep links on Windows/Linux require single-instance (first plugin, deep-link feature) or the callback is lost to a second process"
+      ],
+      "noStagedFiles": true,
+      "diffSummary": "No code changes; research synthesis only (plus one project memory saved, #12881)",
+      "reviewFindings": [
+        "no blockers - research deliverable; findings and risks enumerated with sources and severity (R1-R5)"
+      ],
+      "manualNotes": "Recommend the wrapper vendor the pinned upstream build into vendor/frontend/build so the desktop release is reproducible independent of the upstream repo layout; verify current macOS getUserMedia/getDisplayMedia behavior on a stable (non-rc) Tauri 2.x before committing to screenshare, since rc8 regressed permission prompts (tauri#10878)."
+    }
+  },
+  "effects": {
+    "fileMutation": {
+      "status": "not-applicable",
+      "expected": false,
+      "attempted": true
+    }
+  },
+  "transcriptPath": "/Users/jrimmer/work/chatto-desktop/.pi-subagents/artifacts/f6356689_ce-best-practices-researcher_0_transcript.jsonl",
+  "timestamp": 1785448449115
+}
