@@ -2,7 +2,7 @@ mod server_config;
 
 use server_config::ConfigStore;
 use std::sync::Arc;
-use tauri::Manager;
+use tauri::{Listener, Manager};
 
 /// Get the configured server URL.
 #[tauri::command]
@@ -20,6 +20,12 @@ fn set_server_url(store: tauri::State<'_, Arc<ConfigStore>>, url: String) {
 #[tauri::command]
 fn clear_server_url(store: tauri::State<'_, Arc<ConfigStore>>) {
     store.clear_server_url();
+}
+
+/// Take and clear the pending OAuth callback URL (from solander:// deep-link).
+#[tauri::command]
+fn take_pending_callback(store: tauri::State<'_, Arc<ConfigStore>>) -> Option<String> {
+    store.take_pending_callback()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -56,13 +62,32 @@ pub fn run() {
                 eprintln!("[solander] failed to create app data dir: {e}");
             }
             let store = Arc::new(ConfigStore::new(app_data_dir));
-            app.manage(store);
+            app.manage(store.clone());
+
+            // Listen for deep-link events. When a solander://callback URL
+            // arrives (the OAuth provider redirects back after sign-in), store
+            // it so the webview can retrieve it via take_pending_callback().
+            let store_for_deep_link = store.clone();
+            app.listen("deep-link://new-url", move |event| {
+                if let Ok(urls) =
+                    serde_json::from_str::<Vec<String>>(event.payload())
+                {
+                    if let Some(url) = urls.first() {
+                        eprintln!("[solander] deep-link: {url}");
+                        if url.starts_with("solander://callback") {
+                            store_for_deep_link.set_pending_callback(url.clone());
+                        }
+                    }
+                }
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             get_server_url,
             set_server_url,
             clear_server_url,
+            take_pending_callback,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Solander");

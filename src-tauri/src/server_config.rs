@@ -3,17 +3,16 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 /// Persisted Solander configuration — the user's configured Chatto server URL.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SolanderConfig {
     pub server_url: Option<String>,
 }
 
-
-/// Thread-safe config store.
+/// Thread-safe config store with in-memory deep-link callback storage.
 pub struct ConfigStore {
     inner: Mutex<SolanderConfig>,
     path: PathBuf,
+    pending_callback: Mutex<Option<String>>,
 }
 
 impl ConfigStore {
@@ -31,6 +30,7 @@ impl ConfigStore {
         Self {
             inner: Mutex::new(inner),
             path,
+            pending_callback: Mutex::new(None),
         }
     }
 
@@ -54,5 +54,15 @@ impl ConfigStore {
         if let Ok(json) = serde_json::to_string_pretty(config) {
             let _ = std::fs::write(&self.path, json);
         }
+    }
+
+    /// Store a pending OAuth callback URL (from solander:// deep-link).
+    pub fn set_pending_callback(&self, url: String) {
+        *self.pending_callback.lock().unwrap() = Some(url);
+    }
+
+    /// Take and clear the pending OAuth callback URL.
+    pub fn take_pending_callback(&self) -> Option<String> {
+        self.pending_callback.lock().unwrap().take()
     }
 }

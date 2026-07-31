@@ -2,13 +2,18 @@
 // This script runs BEFORE the SPA's own scripts (it is a regular <script>, not
 // a module, while SvelteKit's entry is type="module" and therefore deferred).
 //
-// It does four things:
+// It does six things:
 //   1. Sets up the __SOLANDER__ global so the SPA can detect it's in desktop mode
 //   2. Disables service worker registration (not supported under tauri://)
 //   3. Overrides fetch() to rewrite tauri://localhost API calls to the
 //      configured server URL, using tauri-plugin-http to bypass CORS
 //   4. Overrides WebSocket to rewrite tauri://localhost realtime connections
 //      to the configured server URL
+//   5. Intercepts external navigation (window.location.href) to open the
+//      OAuth authorize endpoint in the system browser with a rewritten
+//      redirect_uri (solander://callback)
+//   6. Listens for solander://callback deep-links and routes them into the
+//      SPA's /servers/callback route so the token exchange can complete
 (() => {
 	globalThis.__SOLANDER__ = {
 		get serverUrl() {
@@ -185,6 +190,12 @@
 			return tauriFetch(rewritten, init);
 		}
 
+		// Route all external https://http:// fetches through tauri-plugin-http
+		// to bypass CORS. The webview's built-in fetch is CORS-bound.
+		if (isExternalUrl(url)) {
+			return tauriFetch(url, init);
+		}
+
 		return origFetch(input, init);
 	};
 
@@ -210,4 +221,151 @@
 	SolanderWebSocket.CLOSING = OrigWebSocket.CLOSING;
 	SolanderWebSocket.CLOSED = OrigWebSocket.CLOSED;
 	window.WebSocket = SolanderWebSocket;
+
+	// --- 5. Intercept external navigation (OAuth authorize redirect) ---
+	// Chatto's startServerOAuthFlow sets window.location.href to the server's
+	// /oauth/authorize URL (external). The Tauri webview blocks external
+	// navigation, so we intercept it: rewrite the redirect_uri from
+	// tauri://localhost/servers/callback to solander://callback, then open
+	// the authorize URL in the system browser via tauri-plugin-opener.
+	var DESKTOP_REDIRECT_URI = "solander://callback";
+	var SPA_CALLBACK_PATH = "/servers/callback";
+
+	function isExternalUrl(url) {
+		if (!url) return false;
+		return (
+			url.indexOf("http://") === 0 ||
+			url.indexOf("https://") === 0
+		);
+	}
+
+	function openInSystemBrowser(url) {
+		var invoke =
+			window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke;
+		if (typeof invoke === "function") {
+			invoke("plugin:opener|open_url", { url: url }).catch((e) => {
+				console.error("[solander] failed to open URL in browser:", e);
+			});
+		}
+	}
+
+	// Rewrite the redirect_uri parameter in an OAuth authorize URL.
+	function rewriteAuthorizeUrl(url) {
+		try {
+			var parsed = new URL(url);
+			if (parsed.searchParams.has("redirect_uri")) {
+				parsed.searchParams.set("redirect_uri", DESKTOP_REDIRECT_URI);
+				return parsed.toString();
+			}
+		} catch (e) {
+			// Not a parseable URL — return as-is
+		}
+		return url;
+	}
+
+	// Intercept window.location.href assignments to external URLs.
+	// We use a property descriptor on window.location to catch assignments.
+	// Note: this is a best-effort interception. Some code paths may use
+	// window.location.replace() or assign() instead.
+	var origLocationDescriptor = Object.getOwnPropertyDescriptor(
+		window.Location.prototype,
+		"href",
+	);
+	if (origLocationDescriptor && origLocationDescriptor.set) {
+		Object.defineProperty(window.Location.prototype, "href", {
+			get: function () {
+				return origLocationDescriptor.get.call(this);
+			},
+			set: function (value) {
+				if (isExternalUrl(value)) {
+					var rewritten = rewriteAuthorizeUrl(value);
+					openInSystemBrowser(rewritten);
+					return;
+				}
+				origLocationDescriptor.set.call(this, value);
+			},
+		});
+	}
+
+	// Also intercept location.assign() and location.replace()
+	var origAssign = window.Location.prototype.assign;
+	window.Location.prototype.assign = function (url) {
+		if (isExternalUrl(url)) {
+			openInSystemBrowser(rewriteAuthorizeUrl(url));
+			return;
+		}
+		return origAssign.call(this, url);
+	};
+	var origReplace = window.Location.prototype.replace;
+	window.Location.prototype.replace = function (url) {
+		if (isExternalUrl(url)) {
+			openInSystemBrowser(rewriteAuthorizeUrl(url));
+			return;
+		}
+		return origReplace.call(this, url);
+	};
+
+	// Also intercept window.open() (used by some OAuth flows)
+	var origWindowOpen = window.open;
+	window.open = function (url) {
+		if (isExternalUrl(url)) {
+			openInSystemBrowser(rewriteAuthorizeUrl(url));
+			return null;
+		}
+		return origWindowOpen.apply(this, arguments);
+	};
+
+	// --- 6. Listen for solander://callback deep-links ---
+	// After the user signs in on the server, the system browser redirects to
+	// solander://callback?code=...&state=... . The OS hands this to Solander,
+	// and tauri-plugin-deep-link emits a 'deep-link://new-url' event. We
+	// route the callback parameters into the SPA's /servers/callback route.
+	function handleDeepLinkUrl(deepLinkUrl) {
+		console.log("[solander] deep-link received:", deepLinkUrl);
+		try {
+			var parsed = new URL(deepLinkUrl);
+			// Accept solander://callback?code=...&state=...
+			if (parsed.protocol === "solander:" && parsed.hostname === "callback") {
+				var code = parsed.searchParams.get("code");
+				var state = parsed.searchParams.get("state");
+				var error = parsed.searchParams.get("error");
+				if (code || error) {
+					var params = new URLSearchParams();
+					if (code) params.set("code", code);
+					if (state) params.set("state", state);
+					if (error) {
+						params.set("error", error);
+						var desc = parsed.searchParams.get("error_description");
+						if (desc) params.set("error_description", desc);
+					}
+					var spaCallback = SPA_CALLBACK_PATH + "?" + params.toString();
+					console.log("[solander] routing to SPA callback:", spaCallback);
+					window.location.replace(spaCallback);
+				}
+			}
+		} catch (e) {
+			console.error("[solander] failed to handle deep-link:", e);
+		}
+	}
+
+	var invoke = window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke;
+	if (typeof invoke === "function") {
+		// Poll for pending OAuth callbacks. The Rust side stores
+		// solander://callback URLs via the deep-link event listener in lib.rs;
+		// the webview polls take_pending_callback() to retrieve them. This avoids
+		// relying on @tauri-apps/api/event module resolution in the webview.
+		function pollPendingCallback() {
+			invoke("take_pending_callback")
+				.then((url) => {
+					if (url) {
+						handleDeepLinkUrl(url);
+					}
+				})
+				.catch(() => {});
+		}
+
+		// Check immediately (cold-start case) and then poll every 1s.
+		pollPendingCallback();
+		setInterval(pollPendingCallback, 1000);
+	}
 })();
