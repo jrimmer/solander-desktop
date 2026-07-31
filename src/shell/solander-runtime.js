@@ -162,38 +162,87 @@
 		);
 
 		var rid = await invoke("plugin:http|fetch", {
-			clientConfig: {
-				method: method,
-				url: url,
-				headers: headersArr,
-				data: data,
-			},
-		});
+				clientConfig: {
+					method: method,
+					url: url,
+					headers: headersArr,
+					data: data,
+				},
+			});
 		var response = await invoke("plugin:http|fetch_send", { rid: rid });
-		var bodyData = await invoke("plugin:http|fetch_read_body", {
-			rid: response.rid,
-		});
 
-		var bodyUint8 = bodyData
-			? new Uint8Array(bodyData)
-			: new Uint8Array(0);
-		var res = new Response(bodyUint8, {
-			status: response.status,
-			statusText: response.statusText,
-		});
+		// Build the Response with a streaming body that respects the
+		// plugin:http streaming protocol: each fetch_read_body chunk's LAST
+		// byte is a close signal (1 = done, 0 = more data). Null-body
+		// statuses (101, 103, 204, 205, 304) have no body at all.
+		var responseRid = response.rid;
+		var nullBodyStatus = [101, 103, 204, 205, 304].includes(
+			response.status,
+		);
+		var body = nullBodyStatus
+			? null
+			: new ReadableStream({
+					pull: async (controller) => {
+						var chunk;
+						try {
+							chunk = await invoke(
+								"plugin:http|fetch_read_body",
+								{ rid: responseRid },
+							);
+						} catch (e) {
+							controller.error(e);
+							return;
+						}
+						var dataUint8 = new Uint8Array(chunk);
+						var lastByte = dataUint8[dataUint8.length - 1];
+						var actualData = dataUint8.slice(
+							0,
+							dataUint8.length - 1,
+						);
+						if (lastByte === 1) {
+							controller.close();
+							return;
+						}
+						controller.enqueue(actualData);
+					},
+				});
+
+		var res = new Response(body, {
+				status: response.status,
+				statusText: response.statusText,
+			});
 		// Response.url and Response.headers are read-only; define them
 		Object.defineProperty(res, "url", {
 			value: response.url,
 			writable: false,
-		});
+			});
 		Object.defineProperty(res, "headers", {
 			value: new Headers(response.headers),
+			writable: false,
+		});
+		// Patch clone() so cloning preserves the overridden props
+		var originalClone = res.clone.bind(res);
+		Object.defineProperty(res, "clone", {
+			value: () => {
+				var cloned = originalClone();
+				Object.defineProperty(cloned, "url", {
+					value: response.url,
+					writable: false,
+				});
+				Object.defineProperty(cloned, "headers", {
+					value: new Headers(response.headers),
+					writable: false,
+				});
+				return cloned;
+			},
 			writable: false,
 		});
 		console.log(
 			"[solander] fetch ←",
 			response.status,
 			url,
+			"headers:",
+			JSON.stringify(response.headers),
 		);
 		return res;
 	}
