@@ -3,12 +3,31 @@ import { describe, it, expect } from "vitest";
 describe("media", () => {
 	describe("getPlatformCapability", () => {
 		it("returns supported for non-Linux platforms", async () => {
+			// Mock navigator.platform to a non-Linux value (CI runs on Linux)
+			const originalPlatform = (
+				globalThis as unknown as { navigator?: { platform?: string } }
+			).navigator?.platform;
+			Object.defineProperty(globalThis, "navigator", {
+				value: { platform: "MacIntel" },
+				configurable: true,
+				writable: true,
+			});
+
 			const { getPlatformCapability } = await import("./media");
 			const cap = getPlatformCapability();
 			expect(cap.mic).toBe("supported");
 			expect(cap.camera).toBe("supported");
 			expect(cap.screenShare).toBe("supported");
 			expect(cap.voiceCall).toBe("supported");
+
+			// Restore
+			Object.defineProperty(globalThis, "navigator", {
+				value: originalPlatform
+					? { platform: originalPlatform }
+					: undefined,
+				configurable: true,
+				writable: true,
+			});
 		});
 
 		it("returns unsupported for Linux", async () => {
