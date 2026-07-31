@@ -7,3 +7,4 @@ dist/
 .build/
 .pi-subagents/
 vendor/
+icon-source.png
