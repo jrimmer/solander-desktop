@@ -79,7 +79,10 @@ if (hasVendor) {
 	// configured server URL. A small boot-loader guard is prepended so
 	// first-run users are redirected to the server picker before the SPA's
 	// own scripts run.
-	const runtimeJs = readFileSync(resolve(SHELL, "solander-runtime.js"), "utf-8");
+	const runtimeJs = readFileSync(
+		resolve(SHELL, "solander-runtime.js"),
+		"utf-8",
+	);
 	const bootGuard = `<script>
 // Boot guard: redirect to server picker if no server is configured.
 (function () {
@@ -90,10 +93,7 @@ if (hasVendor) {
 })();
 </script>`;
 	const injectionScript =
-		bootGuard +
-		'\n<script>\n' +
-		runtimeJs +
-		'\n</script>\n';
+		bootGuard + "\n<script>\n" + runtimeJs + "\n</script>\n";
 
 	const firstScript = spaHtml.indexOf("<script");
 	if (firstScript !== -1) {
