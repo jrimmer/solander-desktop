@@ -1,0 +1,107 @@
+name: Release
+
+on:
+  # Trigger on version tags (v0.1.0, v1.2.3, etc.)
+  push:
+    tags:
+      - "v*"
+  # Allow manual triggering from the Actions tab
+  workflow_dispatch:
+
+# Cancel in-progress runs for the same ref when a new commit/tag is pushed.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    permissions:
+      contents: write
+    strategy:
+      # Don't fail the whole matrix if one platform has a transient issue —
+      # we want partial releases so users on the working platforms get builds.
+      fail-fast: false
+      matrix:
+        include:
+          # macOS: universal build covering both Apple Silicon and Intel.
+          # tauri-action builds both targets and merges into a single .app.
+          - platform: macos-latest
+            args: "--target universal-apple-darwin"
+          # Linux: WebKitGTK-based. No WebRTC (voice/video won't work) —
+          # documented in README. Ubuntu 22.04 for libwebkit2gtk-4.1 compat.
+          - platform: ubuntu-22.04
+            args: ""
+          # Windows: single x86_64 build covers the vast majority of users.
+          - platform: windows-latest
+            args: ""
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # macOS universal binary needs both targets installed.
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            xdg-utils
+
+      - name: Install JavaScript dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Fetch and build the pinned upstream Chatto frontend before tauri-action.
+      # beforeBuildCommand in tauri.conf.json runs this, but we run it explicitly
+      # here too so failures surface early in the log.
+      - name: Fetch & build upstream frontend
+        run: pnpm fetch-frontend
+
+      - name: Build & publish with tauri-action
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # The tag name becomes the release name.
+          tagName: ${{ github.ref_name }}
+          releaseName: "Solander ${{ github.ref_name }}"
+          releaseBody: |
+            ## Solander ${{ github.ref_name }}
+
+            Desktop client for [Chatto](https://github.com/chattocorp/chatto).
+
+            **Unsigned dev build** — on macOS you may need to right-click → Open
+            the first time, or run `xattr -cr /Applications/Solander.app` to clear
+            the Gatekeeper quarantine flag. On Windows, click "More info" → "Run
+            anyway" in the SmartScreen dialog.
+
+            **Note:** Voice/video screenshare is not available on Linux
+            (WebKitGTK limitation). macOS and Windows builds support all features.
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
