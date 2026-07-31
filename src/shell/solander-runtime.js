@@ -100,16 +100,20 @@
 			return Promise.reject(new Error("Tauri IPC not available"));
 		}
 
+		return asyncTauriFetch(invoke, input, init);
+	}
+
+	async function asyncTauriFetch(invoke, input, init) {
 		init = init || {};
 
 		// Build a Request to normalize the input — this handles Request objects,
 		// URL objects, and plain strings, and merges init properties.
-		// The plugin's own implementation does the same.
 		var req;
 		try {
 			req = new Request(input, init);
 		} catch (e) {
-			return Promise.reject(e);
+			console.error("[solander] Request construction failed:", e);
+			throw e;
 		}
 
 		var method = req.method;
@@ -122,9 +126,9 @@
 		});
 
 		// Convert body to array of bytes (plugin:http expects Array<number> or null)
+		// Must await req.arrayBuffer() — it returns a Promise.
 		var data = null;
 		if (init.body != null) {
-			// Use init.body if provided (Request may have a stream that can't be read twice)
 			var body = init.body;
 			if (typeof body === "string") {
 				data = Array.from(new TextEncoder().encode(body));
@@ -136,49 +140,62 @@
 				data = Array.from(new TextEncoder().encode(JSON.stringify(body)));
 			}
 		} else {
-			// Try reading from the Request body
+			// Read body from the Request (async)
 			try {
-				var buffer = req.arrayBuffer();
+				var buffer = await req.arrayBuffer();
 				if (buffer && buffer.byteLength > 0) {
 					data = Array.from(new Uint8Array(buffer));
 				}
 			} catch (e) {
-				// Body may be a stream that's already consumed
+				// Body may be a stream that's already consumed — that's OK
 			}
 		}
 
-		return invoke("plugin:http|fetch", {
+		console.log(
+			"[solander] fetch →",
+			method,
+			url,
+			"headers:",
+			headersArr.length,
+			"body:",
+			data ? data.length + " bytes" : "null",
+		);
+
+		var rid = await invoke("plugin:http|fetch", {
 			clientConfig: {
 				method: method,
 				url: url,
 				headers: headersArr,
 				data: data,
 			},
-		})
-			.then((rid) => invoke("plugin:http|fetch_send", { rid: rid }))
-			.then((response) =>
-				invoke("plugin:http|fetch_read_body", {
-					rid: response.rid,
-				}).then((bodyData) => {
-					var bodyUint8 = bodyData
-						? new Uint8Array(bodyData)
-						: new Uint8Array(0);
-					var res = new Response(bodyUint8, {
-						status: response.status,
-						statusText: response.statusText,
-					});
-					// Response.url and Response.headers are read-only; define them
-					Object.defineProperty(res, "url", {
-						value: response.url,
-						writable: false,
-					});
-					Object.defineProperty(res, "headers", {
-						value: new Headers(response.headers),
-						writable: false,
-					});
-					return res;
-				}),
-			);
+		});
+		var response = await invoke("plugin:http|fetch_send", { rid: rid });
+		var bodyData = await invoke("plugin:http|fetch_read_body", {
+			rid: response.rid,
+		});
+
+		var bodyUint8 = bodyData
+			? new Uint8Array(bodyData)
+			: new Uint8Array(0);
+		var res = new Response(bodyUint8, {
+			status: response.status,
+			statusText: response.statusText,
+		});
+		// Response.url and Response.headers are read-only; define them
+		Object.defineProperty(res, "url", {
+			value: response.url,
+			writable: false,
+		});
+		Object.defineProperty(res, "headers", {
+			value: new Headers(response.headers),
+			writable: false,
+		});
+		console.log(
+			"[solander] fetch ←",
+			response.status,
+			url,
+		);
+		return res;
 	}
 
 	// --- 3. Override fetch ---
