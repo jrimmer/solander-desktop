@@ -1,4 +1,12 @@
-import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
+import {
+	describe,
+	it,
+	expect,
+	vi,
+	beforeAll,
+	afterAll,
+	beforeEach,
+} from "vitest";
 
 // Mock global fetch for token exchange
 const mockFetch = vi.fn();
@@ -28,6 +36,9 @@ vi.mock("@tauri-apps/plugin-deep-link", () => {
 		_trigger: (urls: string[]) => {
 			for (const cb of callbacks) cb(urls);
 		},
+		_reset: () => {
+			callbacks.length = 0;
+		},
 	};
 });
 
@@ -43,6 +54,26 @@ beforeAll(() => {
 afterAll(() => {
 	vi.unstubAllGlobals();
 	delete (globalThis as any).__SOLANDER_TEST_STATE__;
+});
+
+// Reset mock call history and default resolution before each test to
+// prevent state leakage between tests (vitest v4 clears implementations
+// on clearAllMocks, so we use targeted mockReset on mockFetch instead).
+beforeEach(async () => {
+	mockFetch.mockReset();
+	mockFetch.mockResolvedValue({
+		ok: true,
+		json: () => Promise.resolve({ token: "test-token" }),
+	});
+	// Reset all deep-link mock implementations. The cold-start test sets
+	// getCurrent to return a URL with PREDICTABLE_STATE; without this reset,
+	// that mock persists into the CSRF tests and resolves their callbacks
+	// immediately with a matching state, bypassing the mismatched-state
+	// validation under test.
+	const deepLink = await import("@tauri-apps/plugin-deep-link");
+	(deepLink.getCurrent as any).mockReset();
+	(deepLink.getCurrent as any).mockResolvedValue(null);
+	if (deepLink._reset) (deepLink._reset as any)();
 });
 
 describe("startOAuthFlow", () => {
