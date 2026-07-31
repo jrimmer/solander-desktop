@@ -66,7 +66,19 @@
 		);
 	}
 
-	// Rewrite a tauri://localhost URL to the configured server URL.
+	// Check if a URL string is a relative path (e.g. /auth/login, /api/connect/...).
+	// These must be rewritten to the configured server URL because they
+	// otherwise resolve against tauri://localhost (the asset protocol).
+	function isRelativePath(url) {
+		return (
+			typeof url === "string" &&
+			url.length > 0 &&
+			url.charAt(0) === "/" &&
+			url.charAt(1) !== "/" // exclude protocol-relative URLs (//host/...)
+		);
+	}
+
+	// Rewrite a tauri://localhost or relative URL to the configured server URL.
 	function rewriteUrl(url) {
 		var serverUrl = getServerUrl();
 		if (!serverUrl) return url;
@@ -162,13 +174,13 @@
 		);
 
 		var rid = await invoke("plugin:http|fetch", {
-				clientConfig: {
-					method: method,
-					url: url,
-					headers: headersArr,
-					data: data,
-				},
-			});
+			clientConfig: {
+				method: method,
+				url: url,
+				headers: headersArr,
+				data: data,
+			},
+		});
 		var response = await invoke("plugin:http|fetch_send", { rid: rid });
 
 		// Build the Response with a streaming body that respects the
@@ -176,29 +188,23 @@
 		// byte is a close signal (1 = done, 0 = more data). Null-body
 		// statuses (101, 103, 204, 205, 304) have no body at all.
 		var responseRid = response.rid;
-		var nullBodyStatus = [101, 103, 204, 205, 304].includes(
-			response.status,
-		);
+		var nullBodyStatus = [101, 103, 204, 205, 304].includes(response.status);
 		var body = nullBodyStatus
 			? null
 			: new ReadableStream({
 					pull: async (controller) => {
 						var chunk;
 						try {
-							chunk = await invoke(
-								"plugin:http|fetch_read_body",
-								{ rid: responseRid },
-							);
+							chunk = await invoke("plugin:http|fetch_read_body", {
+								rid: responseRid,
+							});
 						} catch (e) {
 							controller.error(e);
 							return;
 						}
 						var dataUint8 = new Uint8Array(chunk);
 						var lastByte = dataUint8[dataUint8.length - 1];
-						var actualData = dataUint8.slice(
-							0,
-							dataUint8.length - 1,
-						);
+						var actualData = dataUint8.slice(0, dataUint8.length - 1);
 						if (lastByte === 1) {
 							controller.close();
 							return;
@@ -208,14 +214,14 @@
 				});
 
 		var res = new Response(body, {
-				status: response.status,
-				statusText: response.statusText,
-			});
+			status: response.status,
+			statusText: response.statusText,
+		});
 		// Response.url and Response.headers are read-only; define them
 		Object.defineProperty(res, "url", {
 			value: response.url,
 			writable: false,
-			});
+		});
 		Object.defineProperty(res, "headers", {
 			value: new Headers(response.headers),
 			writable: false,
@@ -266,6 +272,14 @@
 		if (isTauriOrigin(url) && !isSpaAsset(url)) {
 			var rewritten = rewriteUrl(url);
 			return tauriFetch(rewritten, init);
+		}
+
+		// Rewrite relative paths (e.g. /auth/login, /api/connect/...) to the
+		// configured server URL. Under tauri://localhost these would resolve
+		// against the asset protocol and hit no Chatto server.
+		if (isRelativePath(url)) {
+			var fullUrl = getServerUrl() + url;
+			return tauriFetch(fullUrl, init);
 		}
 
 		// Route all external https://http:// fetches through tauri-plugin-http
