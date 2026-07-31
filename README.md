@@ -6,6 +6,8 @@ Solander is a thin desktop wrapper around the excellent Chatto web frontend, bui
 
 > ⚠️ **Text chat only.** Voice, video, and screen share are not yet supported. See [Voice & Video](#voice--video) below. Contributions welcome via PR.
 
+**Tested against Chatto [v0.4.8](https://github.com/chattocorp/chatto/releases/tag/v0.4.8).** The upstream frontend is pinned to this release tag at build time.
+
 ---
 
 ## Download
