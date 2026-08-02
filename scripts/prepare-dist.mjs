@@ -122,15 +122,28 @@ if (hasVendor) {
 	const injectionScript =
 		bootGuard + "\n<script>\n" + runtimeJs + "\n</script>\n";
 
+	// Inject Solander CSS overrides (re-enabling mouse text selection, which
+	// Chatto's own stylesheets disable via body/.message-row
+	// user-select: none). Rendered as a <style> block riding along with the
+	// runtime injection so it lands in the SPA's <head> ahead of the app CSS.
+	const overridesCssPath = resolve(SHELL, "solander-overrides.css");
+	const overridesCss = existsSync(overridesCssPath)
+		? readFileSync(overridesCssPath, "utf-8")
+		: "";
+	const styleTag = overridesCss.trim()
+		? `<style id="solander-overrides">\n${overridesCss}\n</style>\n`
+		: "";
+
 	const firstScript = spaHtml.indexOf("<script");
 	if (firstScript !== -1) {
 		spaHtml =
 			spaHtml.slice(0, firstScript) +
+			styleTag +
 			injectionScript +
 			spaHtml.slice(firstScript);
 		writeFileSync(distIndex, spaHtml, "utf-8");
 		console.log(
-			"[prepare-dist] Injected __SOLANDER__ + runtime into index.html.",
+			"[prepare-dist] Injected __SOLANDER__ + runtime + overrides into index.html.",
 		);
 	} else {
 		console.warn(

@@ -1,0 +1,28 @@
+/* Solander desktop overrides — injected into the Chatto SPA's <head> by
+ * scripts/prepare-dist.mjs (rendered as <style id="solander-overrides">).
+ *
+ * Why this exists: the Chatto frontend ships
+ *   body { -webkit-user-select: none; user-select: none }
+ *   .message-row { -webkit-user-select: none; user-select: none }
+ * which disables mouse text selection for most of the UI (only message
+ * bodies via `.pointer-fine:select-text` and form fields are re-enabled).
+ * On the desktop, users expect to be able to select and copy text, so we
+ * re-enable selection app-wide.
+ *
+ * Scope note: this is a deliberate behavior change from upstream Chatto's
+ * web UI — it makes chat content (messages, usernames, timestamps, headers,
+ * sidebar text) selectable, matching native chat clients. */
+
+body,
+.message-row {
+	-webkit-user-select: text !important;
+	user-select: text !important;
+}
+
+/* Keep text selection disabled while the user is dragging the sidebar
+ * resize handle (preserves Chatto's own body[data-resizing-sidebar] rule,
+ * which a plain `body` override would otherwise clobber). */
+body[data-resizing-sidebar] {
+	-webkit-user-select: none !important;
+	user-select: none !important;
+}
